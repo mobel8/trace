@@ -95,8 +95,10 @@ function eventRow(ev) {
   } else if (ev.kind === 'habit') {
     ico = 'repeat'; ec = hueVar(ev.habit.color);
     body = h('div', 'event-body',
-      h('div', 'txt', ev.habit.emoji + ' ' + ev.title),
-      h('div', 'meta', 'habitude cochée'));
+      h('div', 'txt', (ev.habit.emoji ? ev.habit.emoji + ' ' : '') + ev.title),
+      h('div', 'meta',
+        (ev.note ? '« ' + ev.note + ' » · ' : '')
+        + 'habitude cochée' + (ev.bonus ? ' + bonus ✨' : '')));
   } else if (ev.kind === 'note') {
     ico = 'note'; ec = 'var(--text-3)';
     body = h('div', 'event-body', h('div', 'txt', highlightTags(ev.title)));

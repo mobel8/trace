@@ -1,7 +1,7 @@
 // logic.js — Trace : logique métier pure, partagée serveur (Node) et client (navigateur).
 // Aucune dépendance, aucun accès horloge/fichier : tout reçoit ses entrées en paramètres.
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 export const DAY_MS = 86400000;
 
 /* ============================== Dates (heure LOCALE) ============================== */
@@ -138,7 +138,51 @@ export function reduce(state, op) {
       if ('emoji' in p) { req(isStr(p.emoji) && p.emoji.length <= 8, 'emoji invalide'); next.emoji = p.emoji; }
       if ('color' in p) { req(HABIT_COLORS.includes(p.color), 'couleur invalide'); next.color = p.color; }
       if ('schedule' in p) { req(validSchedule(p.schedule), 'fréquence invalide'); next.schedule = p.schedule; }
+      if ('paliers' in p) {
+        next.paliers = validPaliers(p.paliers);
+        if (next.paliers) {
+          const idx = Math.min(next.palier ?? 0, next.paliers.length - 1);
+          next.palier = Math.max(0, idx);
+          if (!next.palierDepuis) next.palierDepuis = h.createdDay;
+        } else {
+          delete next.palier; delete next.palierDepuis;
+        }
+      }
+      if ('seuilPalier' in p) { req(Number.isInteger(p.seuilPalier) && p.seuilPalier >= 3 && p.seuilPalier <= 30, 'seuil invalide'); next.seuilPalier = p.seuilPalier; }
+      if ('bonusTexte' in p) { req(isStr(p.bonusTexte), 'bonus invalide'); next.bonusTexte = p.bonusTexte.trim().slice(0, 120); }
       s.habits = s.habits.map((x) => (x.id === h.id ? next : x));
+      return s;
+    }
+    case 'habit.palierSet': {
+      const h = findHabit(op.id);
+      req(Array.isArray(h.paliers) && h.paliers.length, 'habitude sans paliers');
+      req(Number.isInteger(op.palier) && op.palier >= 0 && op.palier < h.paliers.length, 'palier hors bornes');
+      req(isValidKey(op.today), 'jour manquant');
+      s.habits = s.habits.map((x) => (x.id === h.id ? { ...x, palier: op.palier, palierDepuis: op.today } : x));
+      return s;
+    }
+    case 'habit.note': {
+      const h = findHabit(op.id);
+      req(isValidKey(op.date), 'date invalide');
+      req(isStr(op.note) && op.note.length <= 300, 'note invalide');
+      const entry = habitEntry(s, h.id, op.date);
+      req(entry, 'rien de coché ce jour-là');
+      const note = op.note.trim();
+      const nextEntry = { ...entry };
+      if (note) nextEntry.note = note;
+      else delete nextEntry.note;
+      s.habitLogs = { ...s.habitLogs, [op.date]: { ...s.habitLogs[op.date], [h.id]: nextEntry } };
+      return s;
+    }
+    case 'habit.bonusToggle': {
+      const h = findHabit(op.id);
+      req(isValidKey(op.date), 'date invalide');
+      const entry = habitEntry(s, h.id, op.date);
+      req(entry, 'rien de coché ce jour-là');
+      const nextEntry = { ...entry };
+      if (nextEntry.bonus) delete nextEntry.bonus;
+      else nextEntry.bonus = true;
+      s.habitLogs = { ...s.habitLogs, [op.date]: { ...s.habitLogs[op.date], [h.id]: nextEntry } };
       return s;
     }
     case 'habit.archive': {
@@ -170,13 +214,18 @@ export function reduce(state, op) {
       req(isValidKey(op.date), 'date invalide');
       req(isNum(op.ts), 'ts manquant');
       // Cocher avant la date de création = rattraper le passé : l'historique
-      // de l'habitude s'étend (les séries et taux repartent de cette date).
-      if (op.date < h.createdDay) {
-        s.habits = s.habits.map((x) => (x.id === h.id ? { ...x, createdDay: op.date } : x));
+      // de l'habitude s'étend (les séries, taux ET la consolidation du palier
+      // courant repartent de cette date).
+      if (op.date < h.createdDay || (h.palierDepuis && op.date < h.palierDepuis)) {
+        s.habits = s.habits.map((x) => (x.id === h.id ? {
+          ...x,
+          createdDay: op.date < x.createdDay ? op.date : x.createdDay,
+          ...(x.palierDepuis && op.date < x.palierDepuis ? { palierDepuis: op.date } : {}),
+        } : x));
       }
       const day = { ...(s.habitLogs[op.date] || {}) };
       if (day[h.id]) delete day[h.id];
-      else day[h.id] = op.ts;
+      else day[h.id] = { t: op.ts }; // format objet : accueille note et bonus
       const logs = { ...s.habitLogs };
       if (Object.keys(day).length) logs[op.date] = day;
       else delete logs[op.date];
@@ -332,15 +381,25 @@ export function reduce(state, op) {
   }
 }
 
+// Paliers : le « noyau » de l'habitude à chaque étape (du plus petit au complet).
+function validPaliers(v) {
+  if (v == null) return null;
+  req(Array.isArray(v) && v.length >= 1 && v.length <= 6, 'paliers : 1 à 6 étapes');
+  const out = v.map((x) => { req(isStr(x), 'palier invalide'); return x.trim().slice(0, 120); }).filter(Boolean);
+  req(out.length >= 1, 'paliers vides');
+  return out;
+}
+
 function makeHabit(h, order) {
   req(h && typeof h === 'object', 'habitude manquante');
   req(isStr(h.id) && h.id.length >= 8 && h.id.length <= 64, 'id invalide');
   req(isNum(h.createdAt), 'createdAt manquant');
   req(isValidKey(h.createdDay), 'createdDay manquant');
   req(validSchedule(h.schedule), 'fréquence invalide');
-  req(isStr(h.emoji) && h.emoji.length <= 8, 'emoji invalide');
+  req(isStr(h.emoji) && h.emoji.length <= 8, 'emoji invalide'); // '' = pastille neutre
   req(HABIT_COLORS.includes(h.color), 'couleur invalide');
-  return {
+  const paliers = validPaliers(h.paliers);
+  const out = {
     id: h.id,
     name: cleanText(h.name, 60),
     emoji: h.emoji,
@@ -351,13 +410,73 @@ function makeHabit(h, order) {
     archivedAt: null,
     order,
   };
+  if (paliers) {
+    out.paliers = paliers;
+    out.palier = 0;
+    out.palierDepuis = h.createdDay;
+    out.seuilPalier = Number.isInteger(h.seuilPalier) && h.seuilPalier >= 3 && h.seuilPalier <= 30 ? h.seuilPalier : 7;
+  }
+  if (isStr(h.bonusTexte) && h.bonusTexte.trim()) out.bonusTexte = h.bonusTexte.trim().slice(0, 120);
+  return out;
 }
 
 /* ============================== Habitudes : séries ============================== */
 
-export function habitDoneOn(state, habitId, k) {
+// Entrée normalisée d'une coche : les anciennes données stockaient un simple ts,
+// les nouvelles un objet { t, note?, bonus? }. On lit les deux.
+export function habitEntry(state, habitId, k) {
   const day = state.habitLogs[k];
-  return !!(day && day[habitId]);
+  if (!day) return null;
+  const v = day[habitId];
+  if (!v) return null;
+  return typeof v === 'object' ? v : { t: v };
+}
+
+export function habitDoneOn(state, habitId, k) {
+  return !!habitEntry(state, habitId, k);
+}
+
+// Nombre de coches depuis le début du palier courant (consolidation).
+export function reussitesAuPalier(state, habit, todayK) {
+  if (!Array.isArray(habit.paliers) || !habit.paliers.length) return null;
+  const from = habit.palierDepuis || habit.createdDay;
+  let n = 0;
+  for (let k = from; k <= todayK; k = addDays(k, 1)) {
+    if (habitDoneOn(state, habit.id, k)) n++;
+  }
+  return n;
+}
+
+export function pretAMonter(state, habit, todayK) {
+  if (!Array.isArray(habit.paliers)) return false;
+  if ((habit.palier ?? 0) >= habit.paliers.length - 1) return false;
+  return reussitesAuPalier(state, habit, todayK) >= (habit.seuilPalier || 7);
+}
+
+// Jalons de série à célébrer (66 j = médiane d'automatisation, Lally et al. 2010).
+export const JALONS = [7, 14, 30, 66, 100, 200, 365];
+export const estJalon = (n) => JALONS.includes(n);
+
+// « Ne rate jamais deux fois » : le dernier jour PRÉVU avant aujourd'hui a été raté.
+export function rateDernierJourPrevu(state, habit, todayK) {
+  if (habit.schedule.kind === 'weekly') return false;
+  for (let i = 1; i <= 7; i++) {
+    const k = addDays(todayK, -i);
+    if (k < habit.createdDay) return false;
+    if (!isScheduledDay(habit, k)) continue;
+    return !habitDoneOn(state, habit.id, k);
+  }
+  return false;
+}
+
+// Nombre de bonus (✨) sur les 30 derniers jours.
+export function bonus30j(state, habit, todayK) {
+  let n = 0;
+  for (let k = addDays(todayK, -29); k <= todayK; k = addDays(k, 1)) {
+    const e = habitEntry(state, habit.id, k);
+    if (e && e.bonus) n++;
+  }
+  return n;
 }
 
 export function isScheduledDay(habit, k) {
@@ -609,9 +728,11 @@ export function timeline(state, { types, query, todayK, days = 14, beforeK = nul
   }
   if (active.includes('habit')) {
     for (const [k, day] of Object.entries(state.habitLogs)) {
-      for (const [hid, ts] of Object.entries(day)) {
+      for (const [hid, v] of Object.entries(day)) {
         const h = habitById[hid];
-        if (h) events.push({ kind: 'habit', ts, dateKey: k, title: h.name, habit: h });
+        if (!h) continue;
+        const e = typeof v === 'object' ? v : { t: v };
+        events.push({ kind: 'habit', ts: e.t, dateKey: k, title: h.name, habit: h, note: e.note || null, bonus: !!e.bonus });
       }
     }
   }
@@ -630,6 +751,7 @@ export function timeline(state, { types, query, todayK, days = 14, beforeK = nul
     filtered = events.filter((e) => {
       if (e.title && e.title.toLowerCase().includes(q)) return true;
       if (e.project && e.project.toLowerCase().includes(q)) return true;
+      if (e.note && e.note.toLowerCase().includes(q)) return true;
       if (e.tags && e.tags.some((t) => ('#' + t).includes(q) || t.includes(q))) return true;
       return false;
     });

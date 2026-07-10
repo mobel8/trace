@@ -4,6 +4,7 @@ import {
   dateKey, parseKey, todayKey, addDays, diffDays, weekday, weekStartOf, isValidKey, dayOfTs,
   defaultState, reduce,
   habitDoneOn, isScheduledDay, currentStreak, bestStreak, completionRate, habitDueToday,
+  habitEntry, reussitesAuPalier, pretAMonter, estJalon, rateDernierJourPrevu, bonus30j,
   taskSections, projectsOf, parseTags,
   taskChildren, taskDepth, subtreeIds, subtreeHeight, taskProgress,
   activityByDay, momentum, focusToday, timeline, tasksPerWeek, focusPerDay,
@@ -325,6 +326,125 @@ ok('tasksPerWeek et focusPerDay', () => {
   assert.deepEqual(days.map((d) => d.dateKey), ['2026-07-08', '2026-07-09', TODAY]);
   assert.deepEqual(days.map((d) => d.focusMs), [0, 3600000, 0]);
 });
+console.log('— habitudes : paliers, notes, bonus —');
+const HP = {
+  id: 'habit-pompes01', name: 'Pompes', emoji: '', color: 'vert',
+  schedule: { kind: 'daily' }, createdAt: TS('2026-07-01'), createdDay: '2026-07-01',
+  paliers: ['5 pompes', '15 pompes', '30 pompes'], seuilPalier: 3, bonusTexte: '+10 fentes',
+};
+function seedPaliers() {
+  let s = defaultState();
+  s = reduce(s, { type: 'habit.create', habit: HP });
+  return s;
+}
+ok('création avec paliers, seuil, bonus et emoji neutre', () => {
+  const s = seedPaliers();
+  const h = s.habits[0];
+  assert.deepEqual(h.paliers, ['5 pompes', '15 pompes', '30 pompes']);
+  assert.equal(h.palier, 0);
+  assert.equal(h.palierDepuis, '2026-07-01');
+  assert.equal(h.seuilPalier, 3);
+  assert.equal(h.bonusTexte, '+10 fentes');
+  assert.equal(h.emoji, '');
+});
+ok('toggle nouveau format + rétrocompatibilité ancien ts', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-05', ts: TS('2026-07-05') });
+  assert.deepEqual(habitEntry(s, HP.id, '2026-07-05'), { t: TS('2026-07-05') });
+  // ancienne donnée : un simple nombre
+  s = { ...s, habitLogs: { ...s.habitLogs, '2026-07-04': { [HP.id]: 12345 } } };
+  assert.deepEqual(habitEntry(s, HP.id, '2026-07-04'), { t: 12345 });
+  assert.ok(habitDoneOn(s, HP.id, '2026-07-04'));
+  assert.equal(currentStreak(s, s.habits[0], '2026-07-05').n, 2, 'la série lit les deux formats');
+});
+ok('note de réalisation : posée, modifiée, effacée, refusée sans coche', () => {
+  let s = seedPaliers();
+  throws(() => reduce(s, { type: 'habit.note', id: HP.id, date: '2026-07-05', note: 'x' }), 'sans coche');
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-05', ts: TS('2026-07-05') });
+  s = reduce(s, { type: 'habit.note', id: HP.id, date: '2026-07-05', note: '20 pompes, bonne forme' });
+  assert.equal(habitEntry(s, HP.id, '2026-07-05').note, '20 pompes, bonne forme');
+  s = reduce(s, { type: 'habit.note', id: HP.id, date: '2026-07-05', note: '' });
+  assert.ok(!habitEntry(s, HP.id, '2026-07-05').note);
+});
+ok('bonus ✨ : toggle et comptage 30 j', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-05', ts: TS('2026-07-05') });
+  s = reduce(s, { type: 'habit.bonusToggle', id: HP.id, date: '2026-07-05' });
+  assert.equal(habitEntry(s, HP.id, '2026-07-05').bonus, true);
+  assert.equal(bonus30j(s, s.habits[0], TODAY), 1);
+  s = reduce(s, { type: 'habit.bonusToggle', id: HP.id, date: '2026-07-05' });
+  assert.ok(!habitEntry(s, HP.id, '2026-07-05').bonus);
+});
+ok('consolidation : réussites au palier et prêt à monter', () => {
+  let s = seedPaliers();
+  for (const d of ['2026-07-02', '2026-07-03']) s = reduce(s, { type: 'habit.toggle', id: HP.id, date: d, ts: TS(d) });
+  assert.equal(reussitesAuPalier(s, s.habits[0], TODAY), 2);
+  assert.equal(pretAMonter(s, s.habits[0], TODAY), false);
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-04', ts: TS('2026-07-04') });
+  assert.equal(pretAMonter(s, s.habits[0], TODAY), true, 'seuil 3 atteint');
+});
+ok('palierSet : monte, le compteur repart, bornes vérifiées', () => {
+  let s = seedPaliers();
+  for (const d of ['2026-07-02', '2026-07-03', '2026-07-04']) s = reduce(s, { type: 'habit.toggle', id: HP.id, date: d, ts: TS(d) });
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 1, today: '2026-07-05' });
+  const h = s.habits[0];
+  assert.equal(h.palier, 1);
+  assert.equal(h.palierDepuis, '2026-07-05');
+  assert.equal(reussitesAuPalier(s, h, TODAY), 0, 'le compteur de consolidation repart');
+  assert.equal(pretAMonter(s, h, TODAY), false);
+  throws(() => reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 9, today: TODAY }), 'hors bornes');
+  // redescendre est permis (échec sans honte)
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 0, today: '2026-07-06' });
+  assert.equal(s.habits[0].palier, 0);
+});
+ok('rattrapage : cocher avant palierDepuis compte pour la consolidation', () => {
+  let s = defaultState();
+  const h = { ...HP, createdAt: TS(TODAY), createdDay: TODAY }; // créée aujourd'hui
+  s = reduce(s, { type: 'habit.create', habit: h });
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: TODAY, ts: TS(TODAY) });
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-09', ts: TS('2026-07-09') }); // rattrapage
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-08', ts: TS('2026-07-08') });
+  assert.equal(s.habits[0].palierDepuis, '2026-07-08', 'palierDepuis recule avec le rattrapage');
+  assert.equal(reussitesAuPalier(s, s.habits[0], TODAY), 3);
+  assert.equal(pretAMonter(s, s.habits[0], TODAY), true);
+});
+ok('dernier palier : plus de montée proposée', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 2, today: '2026-07-02' });
+  for (const d of ['2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05']) s = reduce(s, { type: 'habit.toggle', id: HP.id, date: d, ts: TS(d) });
+  assert.equal(pretAMonter(s, s.habits[0], TODAY), false);
+});
+ok('jamais deux fois : détection du dernier jour prévu raté', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-08', ts: TS('2026-07-08') });
+  // hier (09) raté → nudge
+  assert.equal(rateDernierJourPrevu(s, s.habits[0], TODAY), true);
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-09', ts: TS('2026-07-09') });
+  assert.equal(rateDernierJourPrevu(s, s.habits[0], TODAY), false);
+});
+ok('jalons de série', () => {
+  assert.ok(estJalon(7) && estJalon(66) && !estJalon(8));
+});
+ok('timeline : note et bonus remontent, note cherchable', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: TODAY, ts: TS(TODAY, 9) });
+  s = reduce(s, { type: 'habit.note', id: HP.id, date: TODAY, note: 'Série lourde de 20' });
+  s = reduce(s, { type: 'habit.bonusToggle', id: HP.id, date: TODAY });
+  const tl = timeline(s, { types: ['habit'], todayK: TODAY });
+  assert.equal(tl.groups[0].events[0].note, 'Série lourde de 20');
+  assert.equal(tl.groups[0].events[0].bonus, true);
+  const rech = timeline(s, { query: 'lourde', todayK: TODAY });
+  assert.equal(rech.groups.length, 1);
+});
+ok('habit.update : paliers modifiables, palier reclampé', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 2, today: '2026-07-02' });
+  s = reduce(s, { type: 'habit.update', id: HP.id, patch: { paliers: ['10 pompes'] } });
+  assert.equal(s.habits[0].palier, 0, 'reclampé sur le nouveau nombre de paliers');
+  s = reduce(s, { type: 'habit.update', id: HP.id, patch: { paliers: null } });
+  assert.ok(!s.habits[0].paliers);
+});
+
 console.log('— sous-tâches —');
 function arbre() {
   // racine → a, b ; a → a1 ; a1 → a1x  (4 niveaux)

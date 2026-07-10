@@ -4,7 +4,7 @@ import { icon } from '../icons.js';
 import * as L from '../logic.js';
 import { getState, apply, todayK, go } from '../app.js';
 import { taskNode } from './tasks.js';
-import { hueVar, schedLabel } from './habits.js';
+import { hueVar, schedLabel, emojiEl, celebrate, openHabitNoteModal } from './habits.js';
 
 function greeting(name, hour) {
   const hello = hour < 5 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir';
@@ -151,8 +151,49 @@ function statTile(ico, lbl, val, unit, cls) {
 
 function habitRow(hb, s, tk, ws) {
   const done = L.habitDoneOn(s, hb.id, tk);
+  const entry = L.habitEntry(s, hb.id, tk);
   const streak = L.currentStreak(s, hb, tk, ws);
+  const aRattraper = !done && L.rateDernierJourPrevu(s, hb, tk);
+  const noyau = Array.isArray(hb.paliers) && hb.paliers.length ? hb.paliers[hb.palier ?? 0] : null;
+
   const check = h('span', { class: 'habit-check', style: { position: 'relative' } }, icon('check', 14));
+
+  /* colonne centrale : nom, noyau du palier courant, note du jour */
+  const main = h('span', 'habit-main',
+    h('span', 'habit-name-line',
+      h('span', 'habit-name', hb.name),
+      streak.n > 0 ? h('span', { class: 'habit-streak' + (streak.n >= 2 ? ' hot' : '') }, icon('flame', 13), streak.n + ' ' + streak.unit) : null,
+      aRattraper ? h('span', { class: 'nudge', title: 'Raté au dernier jour prévu — ne rate jamais deux fois' }, 'à rattraper') : null,
+    ),
+    noyau ? h('span', 'habit-core', 'Noyau · ' + noyau) : null,
+    entry && entry.note ? h('span', 'habit-note-line', icon('note', 11), entry.note) : null,
+  );
+
+  /* actions du jour : note + bonus, une fois la coche posée */
+  const extras = h('span', 'habit-extras');
+  if (done) {
+    extras.append(h('button', {
+      class: 'habit-extra' + (entry && entry.note ? ' on' : ''),
+      title: entry && entry.note ? 'Modifier la note de réalisation' : 'Noter ce que tu as fait',
+      'aria-label': 'Note de réalisation',
+      onclick: (e) => { e.stopPropagation(); openHabitNoteModal(hb, tk); },
+    }, icon('note', 13)));
+    if (hb.bonusTexte) {
+      extras.append(h('button', {
+        class: 'habit-extra' + (entry && entry.bonus ? ' on bonus' : ''),
+        title: (entry && entry.bonus ? 'Bonus fait : ' : 'Bonus : ') + hb.bonusTexte,
+        'aria-label': 'Bonus',
+        onclick: (e) => {
+          e.stopPropagation();
+          const avait = entry && entry.bonus;
+          if (apply({ type: 'habit.bonusToggle', id: hb.id, date: tk }) && !avait) {
+            toast('Bonus fait : ' + hb.bonusTexte + ' ✨', { ico: 'spark' });
+          }
+        },
+      }, icon('spark', 13)));
+    }
+  }
+
   const row = h('div', {
     class: 'habit-row' + (done ? ' done' : ''),
     style: { '--hc': hueVar(hb.color) },
@@ -160,15 +201,15 @@ function habitRow(hb, s, tk, ws) {
     'aria-pressed': String(done),
     'aria-label': hb.name + (done ? ' : fait' : ' : à faire'),
   },
-    h('span', 'habit-emoji', hb.emoji),
-    h('span', 'habit-name', hb.name),
-    streak.n > 0 ? h('span', { class: 'habit-streak' + (streak.n >= 2 ? ' hot' : '') }, icon('flame', 13), streak.n + ' ' + streak.unit) : null,
+    emojiEl(hb),
+    main,
+    extras,
     check,
   );
   const toggle = () => {
     const wasDone = L.habitDoneOn(getState(), hb.id, tk);
     if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !wasDone) {
-      burst(check, hueVar(hb.color));
+      celebrate(hb, check);
     }
   };
   row.addEventListener('click', toggle);

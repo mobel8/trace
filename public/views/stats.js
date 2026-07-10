@@ -93,7 +93,7 @@ export function renderStats(root) {
     for (const { hb, rate, best } of rows) {
       const meter = h('div', { class: 'meter', style: { '--hc': hueVar(hb.color) } }, h('i', { style: { width: Math.round(rate * 100) + '%' } }));
       card.append(h('div', { style: { display: 'grid', gridTemplateColumns: '150px 1fr auto auto', gap: '12px', alignItems: 'center', padding: '7px 0' } },
-        h('span', { style: { fontSize: '13px', fontWeight: 570, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, hb.emoji + ' ' + hb.name),
+        h('span', { style: { fontSize: '13px', fontWeight: 570, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (hb.emoji ? hb.emoji + ' ' : '') + hb.name),
         meter,
         h('span', { class: 'tnum', style: { fontSize: '12.5px', fontWeight: 640, width: '44px', textAlign: 'right' } }, Math.round(rate * 100) + ' %'),
         h('span', { class: 'muted tnum', style: { fontSize: '12px', width: '86px', textAlign: 'right' } }, 'record ' + best.n + ' ' + best.unit),
