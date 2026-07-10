@@ -1,0 +1,11 @@
+{
+  "name": "trace",
+  "version": "1.0.0",
+  "description": "Trace — suivi personnel : habitudes, tâches, journal, historique",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/test-logic.mjs && node tests/test-api.mjs"
+  }
+}
