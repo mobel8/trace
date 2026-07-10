@@ -7,7 +7,7 @@ import {
   habitEntry, reussitesAuPalier, pretAMonter, estJalon, rateDernierJourPrevu, bonus30j, habitOkOn, habitNivOn, depassements,
   taskSections, projectsOf, parseTags,
   taskChildren, taskDepth, subtreeIds, subtreeHeight, taskProgress,
-  activityByDay, momentum, focusToday, timeline, tasksPerWeek, focusPerDay,
+  activityByDay, momentum, focusToday, timeline, tasksPerWeek, focusPerDay, pomodoroEtat,
   fmtDuration, fmtDurationShort,
 } from '../public/logic.js';
 
@@ -155,6 +155,78 @@ ok('sessions focus', () => {
   assert.equal(s.activeSession, null);
   assert.equal(s.sessions.length, 1);
 });
+ok('pomodoro : phases, cycles, temps de travail exact', () => {
+  let s = seed();
+  const T0 = TS(TODAY, 9);
+  s = reduce(s, { type: 'session.start', label: 'Deep work', ts: T0, mode: 'pomodoro', travailMin: 25, pauseMin: 5 });
+  assert.equal(s.activeSession.phase, 'travail');
+  assert.equal(s.activeSession.travailMs, 0);
+  // fin du 1er travail (25 min pile)
+  s = reduce(s, { type: 'session.phase', ts: T0 + 25 * 60000 });
+  assert.equal(s.activeSession.phase, 'pause');
+  assert.equal(s.activeSession.cycles, 1);
+  assert.equal(s.activeSession.travailMs, 25 * 60000);
+  // fin de pause
+  s = reduce(s, { type: 'session.phase', ts: T0 + 30 * 60000 });
+  assert.equal(s.activeSession.phase, 'travail');
+  // stop au milieu du 2e travail (+10 min) → 35 min de travail mais 1 seul 🍅
+  // (une tranche entamée ne compte pas comme cycle : il faut la phase complète)
+  s = reduce(s, { type: 'session.stop', id: 'sess-pomo-01', ts: T0 + 40 * 60000 });
+  const ssn = s.sessions[0];
+  assert.equal(ssn.travailMs, 35 * 60000);
+  assert.equal(ssn.cycles, 1);
+  assert.equal(ssn.end - ssn.start, 40 * 60000, 'durée totale (pauses comprises) conservée');
+});
+ok('pomodoro : stop pile en fin de 2e travail → le cycle compte', () => {
+  let s = seed();
+  const T0 = TS(TODAY, 9);
+  s = reduce(s, { type: 'session.start', label: 'Deep work', ts: T0, mode: 'pomodoro', travailMin: 25, pauseMin: 5 });
+  s = reduce(s, { type: 'session.phase', ts: T0 + 25 * 60000 });
+  s = reduce(s, { type: 'session.phase', ts: T0 + 30 * 60000 });
+  // 2e travail complet (25 min) puis stop sans passer par la pause
+  s = reduce(s, { type: 'session.stop', id: 'sess-pomo-02', ts: T0 + 55 * 60000 });
+  const ssn = s.sessions[0];
+  assert.equal(ssn.travailMs, 50 * 60000);
+  assert.equal(ssn.cycles, 2);
+});
+ok('pomodoro : le focus ne compte que le travail (pas les pauses)', () => {
+  let s = seed();
+  const T0 = TS(TODAY, 9);
+  s = reduce(s, { type: 'session.start', label: 'P', ts: T0, mode: 'pomodoro', travailMin: 25, pauseMin: 5 });
+  s = reduce(s, { type: 'session.phase', ts: T0 + 25 * 60000 }); // → pause
+  // pendant la pause : focusToday = 25 min (rien ne s'ajoute)
+  assert.equal(focusToday(s, TODAY, T0 + 28 * 60000), 25 * 60000);
+  s = reduce(s, { type: 'session.phase', ts: T0 + 30 * 60000 }); // → travail
+  assert.equal(focusToday(s, TODAY, T0 + 33 * 60000), 28 * 60000);
+  s = reduce(s, { type: 'session.stop', id: 'sess-pomo-02', ts: T0 + 33 * 60000 });
+  const act = activityByDay(s, TODAY, TODAY)[TODAY];
+  assert.equal(act.focusMs, 28 * 60000, 'les stats utilisent travailMs, pas end-start');
+});
+ok('pomodoroEtat : restant et dépassement', () => {
+  let s = seed();
+  const T0 = TS(TODAY, 9);
+  s = reduce(s, { type: 'session.start', label: 'P', ts: T0, mode: 'pomodoro', travailMin: 25, pauseMin: 5 });
+  const et = pomodoroEtat(s.activeSession, T0 + 10 * 60000);
+  assert.equal(et.phase, 'travail');
+  assert.equal(et.restantMs, 15 * 60000);
+  const fini = pomodoroEtat(s.activeSession, T0 + 26 * 60000);
+  assert.ok(fini.restantMs < 0, 'phase dépassée → restant négatif (déclencheur de bascule)');
+  assert.equal(pomodoroEtat({ label: 'x', start: 1 }, 2), null, 'session libre → null');
+});
+ok('pomodoro : validations', () => {
+  let s = seed();
+  throws(() => reduce(s, { type: 'session.phase', ts: 1 }), 'aucun pomodoro');
+  throws(() => reduce(s, { type: 'session.start', label: 'x', ts: 1, mode: 'pomodoro', travailMin: 2, pauseMin: 5 }), 'travail trop court');
+  throws(() => reduce(s, { type: 'session.start', label: 'x', ts: 1, mode: 'pomodoro', travailMin: 25, pauseMin: 0 }), 'pause invalide');
+  s = reduce(s, { type: 'session.start', label: 'Libre', ts: 1 });
+  throws(() => reduce(s, { type: 'session.phase', ts: 2 }), 'phase sur session libre');
+  throws(() => reduce(s, { type: 'settings.update', patch: { pomoTravail: 3 } }), 'réglage travail hors bornes');
+  s = reduce(s, { type: 'session.discard' });
+  s = reduce(s, { type: 'settings.update', patch: { pomoTravail: 50, pomoPause: 10, pomoSon: false, pomoNotif: true } });
+  assert.equal(s.settings.pomoTravail, 50);
+  assert.equal(s.settings.pomoSon, false);
+});
+
 ok('op inconnue rejetée', () => {
   throws(() => reduce(defaultState(), { type: 'nimporte.quoi' }), 'type inconnu');
   throws(() => reduce(defaultState(), null), 'op nulle');

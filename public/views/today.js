@@ -5,6 +5,7 @@ import * as L from '../logic.js';
 import { getState, apply, todayK, go } from '../app.js';
 import { taskNode } from './tasks.js';
 import { hueVar, schedLabel, emojiEl, celebrate, openHabitNoteModal } from './habits.js';
+import { jouerCarillon, armerAudio, demanderPermissionNotif, notifierPC } from '../son.js';
 
 function greeting(name, hour) {
   const hello = hour < 5 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir';
@@ -255,50 +256,134 @@ function focusCard(s, tk) {
   const card = h('div', 'card');
   card.append(h('div', 'card-title', icon('target', 15), 'Focus'));
   const a = s.activeSession;
+
+  /* ---------- session en cours ---------- */
   if (a) {
-    const ms = Date.now() - a.start;
-    const mm = Math.floor(ms / 60000), ss = Math.floor((ms % 60000) / 1000);
+    const now = Date.now();
+    const pomo = a.mode === 'pomodoro' ? L.pomodoroEtat(a, now) : null;
+
+    let affiche, sousTitre = a.label;
+    if (pomo) {
+      const r = Math.max(0, pomo.restantMs);
+      affiche = String(Math.floor(r / 60000)).padStart(2, '0') + ':' + String(Math.floor((r % 60000) / 1000)).padStart(2, '0');
+    } else {
+      const ms = now - a.start;
+      affiche = String(Math.floor(ms / 60000)).padStart(2, '0') + ':' + String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
+    }
+
     card.append(h('div', 'focus-live',
-      h('span', 'pulse'),
+      h('span', 'pulse' + (pomo && pomo.phase === 'pause' ? ' pause' : '')),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', { class: 'focus-time', id: 'focus-time' }, String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0')),
-        h('div', 'focus-label', a.label)),
+        h('div', 'row',
+          h('span', { class: 'focus-time', id: 'focus-time' }, affiche),
+          pomo ? h('span', { class: 'phase-chip ' + pomo.phase },
+            pomo.phase === 'travail' ? 'Travail' : 'Pause ☕') : null,
+          pomo && pomo.cycles > 0 ? h('span', { class: 'pomo-cycles', title: 'Cycles de travail terminés' }, '🍅 ×' + pomo.cycles) : null,
+        ),
+        h('div', 'focus-label', sousTitre)),
     ));
-    card.append(h('div', { class: 'row', style: { marginTop: '14px' } },
+
+    const boutons = h('div', { class: 'row', style: { marginTop: '14px', flexWrap: 'wrap' } });
+    if (pomo) {
+      boutons.append(h('button', {
+        class: 'btn btn-ghost', onclick: () => {
+          const versPause = getState().activeSession.phase === 'travail';
+          if (apply({ type: 'session.phase', ts: Date.now() })) {
+            if (getState().settings.pomoSon !== false) jouerCarillon(versPause ? 'pause' : 'travail');
+          }
+        },
+      }, icon(pomo.phase === 'travail' ? 'clock' : 'play', 15), pomo.phase === 'travail' ? 'Pause maintenant' : 'Reprendre le travail'));
+    }
+    boutons.append(
       h('button', {
         class: 'btn btn-primary', onclick: () => {
-          const dur = Date.now() - getState().activeSession.start;
-          if (dur < 20000) {
+          const act = getState().activeSession;
+          const travail = act.mode === 'pomodoro'
+            ? act.travailMs + (act.phase === 'travail' ? Date.now() - act.phaseStart : 0)
+            : Date.now() - act.start;
+          if (travail < 20000) {
             apply({ type: 'session.discard' });
             toast('Session trop courte, ignorée', { ico: 'clock' });
           } else if (apply({ type: 'session.stop', id: uid('sess'), ts: Date.now() })) {
-            toast('Session enregistrée · ' + L.fmtDuration(dur), { ico: 'clock' });
+            if (getState().settings.pomoSon !== false && act.mode === 'pomodoro') jouerCarillon('fin');
+            toast('Session enregistrée · ' + L.fmtDuration(travail) + (act.mode === 'pomodoro' ? ' de travail' : ''), { ico: 'clock' });
           }
         },
       }, icon('stop', 15), 'Terminer'),
-      h('button', {
-        class: 'btn btn-subtle', onclick: () => {
-          apply({ type: 'session.discard' });
-        },
-      }, 'Abandonner'),
-    ));
-  } else {
-    const labels = [...new Set(s.sessions.slice(-30).map((x) => x.label))].reverse().slice(0, 6);
-    const labelInput = h('input', {
-      class: 'input', id: 'focus-label', 'data-keep': '', maxlength: 120,
-      placeholder: 'Sur quoi vas-tu te concentrer ?', list: 'focus-recents',
-    });
-    const start = () => {
-      const label = labelInput.value.trim() || 'Session focus';
-      apply({ type: 'session.start', label, ts: Date.now() });
-    };
-    labelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
-    card.append(
-      h('div', 'quick-add', labelInput, h('button', { class: 'btn btn-primary', onclick: start }, icon('play', 15), 'Démarrer')),
-      h('datalist', { id: 'focus-recents' }, labels.map((l) => h('option', { value: l }))),
+      h('button', { class: 'btn btn-subtle', onclick: () => { apply({ type: 'session.discard' }); } }, 'Abandonner'),
     );
-    const totalMs = L.focusToday(s, tk, Date.now());
-    if (totalMs > 0) card.append(h('div', 'chart-note', L.fmtDuration(totalMs) + ' de focus aujourd’hui'));
+    card.append(boutons);
+    return card;
   }
+
+  /* ---------- au repos : session libre + pomodoro réglable ---------- */
+  const labels = [...new Set(s.sessions.slice(-30).map((x) => x.label))].reverse().slice(0, 6);
+  const labelInput = h('input', {
+    class: 'input', id: 'focus-label', 'data-keep': '', maxlength: 120,
+    placeholder: 'Sur quoi vas-tu te concentrer ?', list: 'focus-recents',
+  });
+  const start = () => {
+    const label = labelInput.value.trim() || 'Session focus';
+    apply({ type: 'session.start', label, ts: Date.now() });
+  };
+  labelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+  card.append(
+    h('div', 'quick-add', labelInput, h('button', { class: 'btn btn-primary', onclick: start }, icon('play', 15), 'Démarrer')),
+    h('datalist', { id: 'focus-recents' }, labels.map((l) => h('option', { value: l }))),
+  );
+
+  /* pomodoro : durées modulables + son doux + notification PC */
+  const travail = s.settings.pomoTravail || 25;
+  const pause = s.settings.pomoPause || 5;
+  const stepper = (valeur, unite, onMoins, onPlus) => h('span', 'pomo-stepper',
+    h('button', { class: 'btn btn-icon pomo-btn', 'aria-label': 'Moins', onclick: onMoins }, '−'),
+    h('b', 'tnum', String(valeur)),
+    h('button', { class: 'btn btn-icon pomo-btn', 'aria-label': 'Plus', onclick: onPlus }, '+'),
+    h('span', 'muted', unite));
+
+  const pomoBox = h('div', 'pomo-box');
+  pomoBox.append(h('div', 'pomo-titre', '🍅 Pomodoro'));
+  pomoBox.append(h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '10px 16px' } },
+    stepper(travail, 'min travail',
+      () => apply({ type: 'settings.update', patch: { pomoTravail: Math.max(5, travail - 5) } }),
+      () => apply({ type: 'settings.update', patch: { pomoTravail: Math.min(120, travail + 5) } })),
+    stepper(pause, 'min pause',
+      () => apply({ type: 'settings.update', patch: { pomoPause: Math.max(1, pause - 1) } }),
+      () => apply({ type: 'settings.update', patch: { pomoPause: Math.min(60, pause + 1) } })),
+    h('button', {
+      class: 'btn btn-primary btn-sm', onclick: () => {
+        armerAudio(); // geste utilisateur : l'audio a le droit de sonner plus tard
+        const label = labelInput.value.trim() || 'Pomodoro';
+        apply({ type: 'session.start', label, ts: Date.now(), mode: 'pomodoro', travailMin: travail, pauseMin: pause });
+      },
+    }, icon('play', 14), 'Lancer'),
+  ));
+  pomoBox.append(h('div', 'chip-row',
+    h('button', {
+      class: 'chip' + (s.settings.pomoSon !== false ? ' on' : ''),
+      onclick: () => {
+        const versOn = s.settings.pomoSon === false;
+        apply({ type: 'settings.update', patch: { pomoSon: versOn } });
+        if (versOn) { armerAudio(); jouerCarillon('fin'); } // aperçu du son doux
+      },
+    }, '🔔 son doux'),
+    h('button', {
+      class: 'chip' + (s.settings.pomoNotif ? ' on' : ''),
+      onclick: async () => {
+        if (s.settings.pomoNotif) { apply({ type: 'settings.update', patch: { pomoNotif: false } }); return; }
+        const perm = await demanderPermissionNotif();
+        if (perm === 'granted') {
+          apply({ type: 'settings.update', patch: { pomoNotif: true } });
+          notifierPC('Notifications activées', 'Trace te préviendra en fin de phase, en douceur.');
+        } else {
+          toast(perm === 'unsupported' ? 'Notifications non disponibles ici' : 'Autorisation refusée par le navigateur', { ico: 'x' });
+        }
+      },
+    }, '🖥 notification PC'),
+  ));
+  card.append(pomoBox);
+
+  const totalMs = L.focusToday(s, tk, Date.now());
+  if (totalMs > 0) card.append(h('div', 'chart-note', L.fmtDuration(totalMs) + ' de focus aujourd’hui'));
   return card;
 }

@@ -123,12 +123,12 @@ function sessionRow(ev) {
     h('span', 'event-ico', icon('play', 13)),
     h('div', 'event-body',
       h('div', 'txt', ssn.label),
-      h('div', 'meta', L.fmtDuration(ssn.end - ssn.start) + ' de focus')),
+      h('div', 'meta', L.fmtDuration(ssn.travailMs ?? (ssn.end - ssn.start)) + ' de focus' + (ssn.cycles ? ' · 🍅 ×' + ssn.cycles : ''))),
     h('span', 'event-time tnum', fmtTime(ssn.start)),
     h('span', 'event-actions',
       h('button', {
         class: 'btn btn-icon', 'aria-label': 'Supprimer', onclick: async () => {
-          if (await confirmDialog({ title: 'Supprimer cette session ?', text: ssn.label + ' · ' + L.fmtDuration(ssn.end - ssn.start) })) {
+          if (await confirmDialog({ title: 'Supprimer cette session ?', text: ssn.label + ' · ' + L.fmtDuration(ssn.travailMs ?? (ssn.end - ssn.start)) })) {
             apply({ type: 'session.delete', id: ssn.id });
           }
         },

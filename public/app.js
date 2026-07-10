@@ -12,6 +12,7 @@ import { renderSettings } from './views/settings.js';
 import { renderOnboarding } from './views/onboarding.js';
 import { renderComptes } from './views/comptes.js';
 import { openQuickAdd } from './views/modals.js';
+import { jouerCarillon, notifierPC } from './son.js';
 
 /* ============================== Comptes ============================== */
 
@@ -183,6 +184,12 @@ function renderSidebar() {
       );
     }),
     h('div', 'side-foot',
+      // Session en cours : visible sur TOUTES les pages, clic = retour au Focus.
+      state.activeSession ? h('button', {
+        class: 'side-stat side-pomo' + (state.activeSession.mode === 'pomodoro' && state.activeSession.phase === 'pause' ? ' pause' : ''),
+        onclick: () => go('aujourdhui'),
+        title: 'Session en cours — revenir au Focus',
+      }, h('span', 'pulse mini'), h('b', { id: 'side-pomo' }, texteSessionCourt(state.activeSession, Date.now()))) : null,
       mom > 0 ? h('div', 'side-stat', icon('flame', 14), h('span', null, 'Élan · ', h('b', null, mom + ' j'))) : null,
       focusMs > 0 || state.activeSession ? h('div', 'side-stat', icon('clock', 14), h('span', null, 'Focus · ', h('b', { id: 'side-focus' }, L.fmtDuration(focusMs)))) : null,
       h('div', 'side-hint', h('span', 'kbd', 'N'), ' nouvelle entrée'),
@@ -192,22 +199,80 @@ function renderSidebar() {
 
 /* ============================== Horloges ============================== */
 
-// Minuteur focus : met à jour l'affichage et le titre d'onglet sans re-render.
+// Fin de phase pomodoro : carillon doux + notification PC (selon réglages) + toast.
+function finDePhase(versPause) {
+  const st = state.settings;
+  if (st.pomoSon !== false) jouerCarillon(versPause ? 'pause' : 'travail');
+  if (st.pomoNotif) {
+    notifierPC(
+      versPause ? 'Pause ☕' : 'On reprend ▶',
+      versPause
+        ? 'Travail terminé — ' + (st.pomoPause || 5) + ' min de pause.'
+        : 'Pause finie — c’est reparti pour ' + (st.pomoTravail || 25) + ' min.');
+  }
+  toast(versPause ? 'Bien joué — pause ☕' : 'Pause finie — on reprend ▶', { ico: versPause ? 'clock' : 'play', ms: 3200 });
+}
+
+// Texte compact du minuteur (sidebar) — identique au rendu et au tick, pour que
+// l'indicateur soit rempli dès son apparition, sans attendre la seconde suivante.
+function texteSessionCourt(a, now) {
+  if (a.mode === 'pomodoro') {
+    const et = L.pomodoroEtat(a, now);
+    const r = Math.max(0, et.restantMs);
+    const mm = Math.floor(r / 60000), ss = Math.floor((r % 60000) / 1000);
+    const txt = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+    return (et.phase === 'travail' ? '▶ ' : '☕ ') + txt + ' · ' + (et.phase === 'travail' ? 'Travail' : 'Pause');
+  }
+  const ms = Math.max(0, now - a.start);
+  const mm = Math.floor(ms / 60000), ss = Math.floor((ms % 60000) / 1000);
+  const txt = (mm < 100 ? String(mm).padStart(2, '0') : mm) + ':' + String(ss).padStart(2, '0');
+  return '▶ ' + txt + (a.label ? ' · ' + a.label.slice(0, 14) : '');
+}
+
+// Minuteur focus : affichage 1 s + transitions pomodoro (avec rattrapage si la
+// fenêtre était en veille : les bascules manquées sont rejouées à leur vraie heure).
 setInterval(() => {
   if (!state) return;
   const a = state.activeSession;
-  if (a) {
-    const ms = Date.now() - a.start;
+  if (!a) {
+    if (document.title !== 'Trace') document.title = 'Trace';
+    return;
+  }
+  const now = Date.now();
+
+  if (a.mode === 'pomodoro') {
+    let garde = 0;
+    while (state.activeSession && state.activeSession.mode === 'pomodoro' && garde++ < 8) {
+      const et = L.pomodoroEtat(state.activeSession, now);
+      if (!et || et.restantMs > 0) break;
+      const versPause = state.activeSession.phase === 'travail';
+      const finPhaseTs = state.activeSession.phaseStart + et.durMs;
+      if (!apply({ type: 'session.phase', ts: finPhaseTs })) break;
+      finDePhase(versPause);
+    }
+    const et = state.activeSession && L.pomodoroEtat(state.activeSession, now);
+    if (et) {
+      const r = Math.max(0, et.restantMs);
+      const mm = Math.floor(r / 60000), ss = Math.floor((r % 60000) / 1000);
+      const txt = String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+      const node = document.getElementById('focus-time');
+      if (node) node.textContent = txt;
+      const side = document.getElementById('side-pomo');
+      if (side) side.textContent = texteSessionCourt(state.activeSession, now);
+      document.title = (et.phase === 'travail' ? '▶ ' : '☕ ') + txt + ' · ' + (et.phase === 'travail' ? 'Travail' : 'Pause') + ' · Trace';
+    }
+  } else {
+    const ms = now - a.start;
     const mm = Math.floor(ms / 60000), ss = Math.floor((ms % 60000) / 1000);
     const txt = (mm < 100 ? String(mm).padStart(2, '0') : mm) + ':' + String(ss).padStart(2, '0');
     const node = document.getElementById('focus-time');
     if (node) node.textContent = txt;
+    const side = document.getElementById('side-pomo');
+    if (side) side.textContent = texteSessionCourt(a, now);
     document.title = '▶ ' + txt + ' · Trace';
-    const side = document.getElementById('side-focus');
-    if (side) side.textContent = L.fmtDuration(L.focusToday(state, L.todayKey(), Date.now()));
-  } else if (document.title !== 'Trace') {
-    document.title = 'Trace';
   }
+  const side = document.getElementById('side-focus');
+  if (side) side.textContent = L.fmtDuration(L.focusToday(state, L.todayKey(), now));
 }, 1000);
 
 // Passage de minuit / retour de veille : re-rendre si le jour a changé.

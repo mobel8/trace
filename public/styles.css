@@ -910,3 +910,33 @@ button.chip:hover { background: var(--surface-3); color: var(--text); }
   margin-bottom: 4px;
 }
 .done-day-n { margin-left: auto; font-weight: 500; color: var(--text-3); font-size: 11.5px; }
+
+/* ============================== Pomodoro ============================== */
+.pomo-box {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 11px;
+  display: grid;
+  gap: 10px;
+}
+.pomo-titre { font-size: 12px; font-weight: 680; color: var(--text-2); }
+.pomo-stepper { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+.pomo-stepper b { min-width: 26px; text-align: center; font-size: 14px; }
+.pomo-stepper .muted { font-size: 12px; }
+.pomo-btn { width: 24px; height: 24px; border-radius: 6px; background: var(--surface-3); font-size: 14px; }
+
+.phase-chip {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  border-radius: 6px; padding: 3px 8px;
+  flex: none;
+}
+.phase-chip.travail { color: var(--accent); background: var(--accent-soft); }
+.phase-chip.pause { color: var(--hue-vert); background: color-mix(in oklab, var(--hue-vert) 14%, transparent); }
+.pomo-cycles { font-size: 12px; color: var(--text-2); flex: none; }
+.pulse.pause { background: var(--hue-vert); }
+.side-pomo { cursor: pointer; border-radius: 7px; padding: 4px 6px; margin: -4px -6px 0; }
+.side-pomo:hover { background: var(--surface); }
+.side-pomo b { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text); }
+.side-pomo.pause b { color: var(--hue-vert); }
+.pulse.mini { width: 6px; height: 6px; }

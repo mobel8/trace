@@ -1,7 +1,7 @@
 // logic.js — Trace : logique métier pure, partagée serveur (Node) et client (navigateur).
 // Aucune dépendance, aucun accès horloge/fichier : tout reçoit ses entrées en paramètres.
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 export const DAY_MS = 86400000;
 
 /* ============================== Dates (heure LOCALE) ============================== */
@@ -41,7 +41,7 @@ export function defaultState() {
     version: 1,
     rev: 0,
     onboarded: false,
-    settings: { name: '', theme: 'dark', accent: 'violet', weekStart: 1 },
+    settings: { name: '', theme: 'dark', accent: 'violet', weekStart: 1, pomoTravail: 25, pomoPause: 5, pomoSon: true, pomoNotif: false },
     habits: [],            // { id, name, emoji, color, schedule, createdAt, createdDay, archivedAt, order }
     habitLogs: {},         // { 'YYYY-MM-DD': { habitId: ts } }
     tasks: [],             // { id, title, notes, project, priority, due, createdAt, completedAt }
@@ -107,6 +107,10 @@ export function reduce(state, op) {
       if ('theme' in p) { req(['dark', 'light', 'auto'].includes(p.theme), 'thème invalide'); next.theme = p.theme; }
       if ('accent' in p) { req(ACCENTS.includes(p.accent), 'accent invalide'); next.accent = p.accent; }
       if ('weekStart' in p) { req(p.weekStart === 0 || p.weekStart === 1, 'weekStart invalide'); next.weekStart = p.weekStart; }
+      if ('pomoTravail' in p) { req(Number.isInteger(p.pomoTravail) && p.pomoTravail >= 5 && p.pomoTravail <= 120, 'durée de travail invalide'); next.pomoTravail = p.pomoTravail; }
+      if ('pomoPause' in p) { req(Number.isInteger(p.pomoPause) && p.pomoPause >= 1 && p.pomoPause <= 60, 'durée de pause invalide'); next.pomoPause = p.pomoPause; }
+      if ('pomoSon' in p) { req(typeof p.pomoSon === 'boolean', 'réglage son invalide'); next.pomoSon = p.pomoSon; }
+      if ('pomoNotif' in p) { req(typeof p.pomoNotif === 'boolean', 'réglage notification invalide'); next.pomoNotif = p.pomoNotif; }
       s.settings = next;
       return s;
     }
@@ -386,20 +390,45 @@ export function reduce(state, op) {
       req(isNum(op.ts), 'ts manquant');
       const label = cleanText(op.label, 120);
       const taskId = op.taskId && s.tasks.some((t) => t.id === op.taskId) ? op.taskId : null;
-      s.activeSession = { label, taskId, start: op.ts };
+      const session = { label, taskId, start: op.ts };
+      if (op.mode === 'pomodoro') {
+        req(Number.isInteger(op.travailMin) && op.travailMin >= 5 && op.travailMin <= 120, 'durée de travail invalide');
+        req(Number.isInteger(op.pauseMin) && op.pauseMin >= 1 && op.pauseMin <= 60, 'durée de pause invalide');
+        session.mode = 'pomodoro';
+        session.travailMin = op.travailMin;
+        session.pauseMin = op.pauseMin;
+        session.phase = 'travail';
+        session.phaseStart = op.ts;
+        session.travailMs = 0;   // temps de TRAVAIL accumulé (les pauses ne comptent pas)
+        session.cycles = 0;      // 🍅 phases de travail terminées
+      }
+      s.activeSession = session;
+      return s;
+    }
+    case 'session.phase': {
+      // Bascule travail ⇄ pause (auto en fin de phase, ou manuelle).
+      const a = s.activeSession;
+      req(a && a.mode === 'pomodoro', 'aucun pomodoro en cours');
+      req(isNum(op.ts) && op.ts >= a.phaseStart, 'ts invalide');
+      if (a.phase === 'travail') {
+        s.activeSession = { ...a, phase: 'pause', phaseStart: op.ts, travailMs: a.travailMs + (op.ts - a.phaseStart), cycles: a.cycles + 1 };
+      } else {
+        s.activeSession = { ...a, phase: 'travail', phaseStart: op.ts };
+      }
       return s;
     }
     case 'session.stop': {
       req(s.activeSession, 'aucune session en cours');
       req(isStr(op.id) && op.id.length >= 8, 'id invalide');
       req(isNum(op.ts) && op.ts > s.activeSession.start, 'ts invalide');
-      s.sessions = [...s.sessions, {
-        id: op.id,
-        label: s.activeSession.label,
-        taskId: s.activeSession.taskId,
-        start: s.activeSession.start,
-        end: op.ts,
-      }];
+      const a = s.activeSession;
+      const entry = { id: op.id, label: a.label, taskId: a.taskId, start: a.start, end: op.ts };
+      if (a.mode === 'pomodoro') {
+        entry.travailMs = a.travailMs + (a.phase === 'travail' ? Math.max(0, op.ts - a.phaseStart) : 0);
+        // 🍅 = phase de travail COMPLÈTE : la tranche finale ne compte que si elle atteint la durée prévue.
+        entry.cycles = a.cycles + (a.phase === 'travail' && op.ts - a.phaseStart >= a.travailMin * 60000 ? 1 : 0);
+      }
+      s.sessions = [...s.sessions, entry];
       s.activeSession = null;
       return s;
     }
@@ -752,7 +781,8 @@ export function activityByDay(state, fromK, toK) {
   }
   for (const ssn of state.sessions) {
     const k = dayOfTs(ssn.start);
-    if (inRange(k)) { const b = get(k); b.sessions++; b.count++; b.focusMs += ssn.end - ssn.start; }
+    // pomodoro : seules les phases de TRAVAIL comptent comme focus
+    if (inRange(k)) { const b = get(k); b.sessions++; b.count++; b.focusMs += ssn.travailMs ?? (ssn.end - ssn.start); }
   }
   return map;
 }
@@ -771,8 +801,20 @@ export function momentum(state, todayK) {
 export function focusToday(state, todayK, now) {
   const act = activityByDay(state, todayK, todayK);
   let ms = (act[todayK] && act[todayK].focusMs) || 0;
-  if (state.activeSession && dayOfTs(state.activeSession.start) === todayK) ms += Math.max(0, now - state.activeSession.start);
+  const a = state.activeSession;
+  if (a && dayOfTs(a.start) === todayK) {
+    if (a.mode === 'pomodoro') ms += a.travailMs + (a.phase === 'travail' ? Math.max(0, now - a.phaseStart) : 0);
+    else ms += Math.max(0, now - a.start);
+  }
   return ms;
+}
+
+// État courant d'un pomodoro actif : durée de la phase, restant, dépassement.
+export function pomodoroEtat(a, now) {
+  if (!a || a.mode !== 'pomodoro') return null;
+  const durMs = (a.phase === 'travail' ? a.travailMin : a.pauseMin) * 60000;
+  const ecoule = Math.max(0, now - a.phaseStart);
+  return { phase: a.phase, durMs, ecouleMs: ecoule, restantMs: durMs - ecoule, cycles: a.cycles };
 }
 
 // Fil unifié pour l'Historique : événements par jour, du plus récent au plus ancien.
@@ -807,7 +849,12 @@ export function timeline(state, { types, query, todayK, days = 14, beforeK = nul
   if (active.includes('session')) {
     for (const ssn of state.sessions) {
       const t = ssn.taskId ? taskById[ssn.taskId] : null;
-      events.push({ kind: 'session', ts: ssn.start, title: ssn.label, durationMs: ssn.end - ssn.start, session: ssn, taskTitle: t ? t.title : null });
+      events.push({
+        kind: 'session', ts: ssn.start, title: ssn.label,
+        durationMs: ssn.travailMs ?? (ssn.end - ssn.start),
+        cycles: ssn.cycles || 0,
+        session: ssn, taskTitle: t ? t.title : null,
+      });
     }
   }
 

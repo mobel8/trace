@@ -111,7 +111,7 @@ function eventRow(ev) {
     ico = 'play'; ec = 'var(--hue-cyan)';
     body = h('div', 'event-body',
       h('div', 'txt', ev.title),
-      h('div', 'meta', L.fmtDuration(ev.durationMs) + ' de focus' + (ev.taskTitle ? ' · ' + ev.taskTitle : '')));
+      h('div', 'meta', L.fmtDuration(ev.durationMs) + ' de focus' + (ev.cycles ? ' · 🍅 ×' + ev.cycles : '') + (ev.taskTitle ? ' · ' + ev.taskTitle : '')));
   }
   return h('div', { class: 'event-row', style: { '--ec': ec } },
     h('span', 'event-ico', icon(ico, 13)),
