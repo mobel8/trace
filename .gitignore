@@ -1,4 +1,6 @@
-data/
+# Donnees LOCALES uniquement (comptes, taches, journal) - jamais poussees.
+/data/
 tests/.tmp-data/
+tests/.e2e-data/
 node_modules/
 *.log
