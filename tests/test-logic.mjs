@@ -5,6 +5,7 @@ import {
   defaultState, reduce,
   habitDoneOn, isScheduledDay, currentStreak, bestStreak, completionRate, habitDueToday,
   taskSections, projectsOf, parseTags,
+  taskChildren, taskDepth, subtreeIds, subtreeHeight, taskProgress,
   activityByDay, momentum, focusToday, timeline, tasksPerWeek, focusPerDay,
   fmtDuration, fmtDurationShort,
 } from '../public/logic.js';
@@ -324,6 +325,79 @@ ok('tasksPerWeek et focusPerDay', () => {
   assert.deepEqual(days.map((d) => d.dateKey), ['2026-07-08', '2026-07-09', TODAY]);
   assert.deepEqual(days.map((d) => d.focusMs), [0, 3600000, 0]);
 });
+console.log('— sous-tâches —');
+function arbre() {
+  // racine → a, b ; a → a1 ; a1 → a1x  (4 niveaux)
+  let s = defaultState();
+  const mk = (id, title, parentId, extra) => {
+    s = reduce(s, { type: 'task.create', task: { id, title, parentId, createdAt: TS('2026-07-01'), ...extra } });
+  };
+  mk('task-racine-1', 'Préparer la démo', null, { due: TODAY, notes: 'Penser au câble HDMI' });
+  mk('task-sub-a', 'Écrire le script', 'task-racine-1');
+  mk('task-sub-b', 'Réserver la salle', 'task-racine-1');
+  mk('task-sub-a1', 'Relire le script', 'task-sub-a');
+  mk('task-sub-a1x', 'Corriger la coquille', 'task-sub-a1');
+  return s;
+}
+ok('création de sous-tâches + helpers', () => {
+  const s = arbre();
+  assert.deepEqual(taskChildren(s.tasks, 'task-racine-1').map((t) => t.id), ['task-sub-a', 'task-sub-b']);
+  assert.equal(taskDepth(s.tasks, s.tasks.find((t) => t.id === 'task-sub-a1x')), 3);
+  assert.deepEqual(subtreeIds(s.tasks, 'task-sub-a').sort(), ['task-sub-a1', 'task-sub-a1x']);
+  assert.equal(subtreeHeight(s.tasks, 'task-racine-1'), 3);
+  assert.deepEqual(taskProgress(s.tasks, 'task-racine-1'), { done: 0, total: 2 });
+});
+ok('profondeur maximale et parent invalide refusés', () => {
+  const s = arbre();
+  throws(() => reduce(s, { type: 'task.create', task: { id: 'task-sub-a1x2', title: 'Trop profond', parentId: 'task-sub-a1x', createdAt: 1 } }), 'profondeur');
+  throws(() => reduce(s, { type: 'task.create', task: { id: 'task-orphelin', title: 'x', parentId: 'inexistant', createdAt: 1 } }), 'parent inconnu');
+});
+ok('terminer la racine termine toute la descendance', () => {
+  let s = arbre();
+  s = reduce(s, { type: 'task.complete', id: 'task-racine-1', ts: TS(TODAY, 18) });
+  for (const id of ['task-racine-1', 'task-sub-a', 'task-sub-b', 'task-sub-a1', 'task-sub-a1x']) {
+    assert.ok(s.tasks.find((t) => t.id === id).completedAt, id + ' devrait être terminée');
+  }
+});
+ok('rouvrir une sous-tâche rouvre ses parents terminés', () => {
+  let s = arbre();
+  s = reduce(s, { type: 'task.complete', id: 'task-racine-1', ts: TS(TODAY, 18) });
+  s = reduce(s, { type: 'task.uncomplete', id: 'task-sub-a1x' });
+  assert.equal(s.tasks.find((t) => t.id === 'task-sub-a1x').completedAt, null);
+  assert.equal(s.tasks.find((t) => t.id === 'task-sub-a1').completedAt, null);
+  assert.equal(s.tasks.find((t) => t.id === 'task-sub-a').completedAt, null);
+  assert.equal(s.tasks.find((t) => t.id === 'task-racine-1').completedAt, null);
+  assert.ok(s.tasks.find((t) => t.id === 'task-sub-b').completedAt, 'la sœur reste terminée');
+});
+ok('supprimer un dossier supprime son contenu', () => {
+  let s = arbre();
+  s = reduce(s, { type: 'task.delete', id: 'task-sub-a' });
+  assert.deepEqual(s.tasks.map((t) => t.id).sort(), ['task-racine-1', 'task-sub-b']);
+});
+ok('les sections ne classent que les racines', () => {
+  const s = arbre();
+  const sec = taskSections(s.tasks, TODAY);
+  assert.deepEqual(sec.today.map((t) => t.id), ['task-racine-1']);
+  assert.equal(sec.someday.length, 0, 'les sous-tâches sans échéance ne sortent pas en Un jour');
+});
+ok('re-parentage : cycle et profondeur refusés, détachement OK', () => {
+  let s = arbre();
+  throws(() => reduce(s, { type: 'task.update', id: 'task-sub-a', patch: { parentId: 'task-sub-a1x' } }), 'cycle');
+  throws(() => reduce(s, { type: 'task.update', id: 'task-sub-a', patch: { parentId: 'task-sub-a' } }), 'soi-même');
+  // task-sub-a (hauteur 2) sous task-sub-b (profondeur 1) → profondeur max 3 : 1+1+2 > 3 refusé
+  throws(() => reduce(s, { type: 'task.update', id: 'task-sub-a', patch: { parentId: 'task-sub-b' } }), 'profondeur');
+  s = reduce(s, { type: 'task.update', id: 'task-sub-a1', patch: { parentId: null } });
+  assert.equal(s.tasks.find((t) => t.id === 'task-sub-a1').parentId, null);
+  const sec = taskSections(s.tasks, TODAY);
+  assert.ok(sec.someday.some((t) => t.id === 'task-sub-a1'), 'détachée, elle redevient une racine sectionnée');
+});
+ok('timeline : la sous-tâche terminée mentionne sa parente', () => {
+  let s = arbre();
+  s = reduce(s, { type: 'task.complete', id: 'task-sub-b', ts: TS(TODAY, 15) });
+  const tl = timeline(s, { types: ['task'], todayK: TODAY });
+  assert.equal(tl.groups[0].events[0].parentTitle, 'Préparer la démo');
+});
+
 ok('fmtDuration', () => {
   assert.equal(fmtDuration(42000), '42 s');
   assert.equal(fmtDuration(25 * 60000), '25 min');

@@ -1,26 +1,56 @@
 // views/tasks.js — vue Tâches : sections (retard / aujourd'hui / à venir / un jour),
-// ajout rapide, filtre par projet, terminées repliées. Exporte taskRow (réutilisé).
+// sous-tâches en arborescence (pliables), notes affichées, ajout rapide, filtre
+// par projet, terminées repliées. Exporte taskNode/taskRow (réutilisés par Aujourd'hui).
 import { h, uid, toast, confirmDialog, frDM, cap, plur, emptyState } from '../ui.js';
 import { icon } from '../icons.js';
 import * as L from '../logic.js';
-import { getState, apply, todayK } from '../app.js';
+import { getState, apply, todayK, scheduleRender } from '../app.js';
 import { openTaskModal } from './modals.js';
 
 let projectFilter = null; // persiste le temps de la session
 let doneOpen = false;
+const collapsedTasks = new Set(); // dossiers repliés (session)
 
 const PRIO_LABEL = { high: 'Priorité haute', med: 'Priorité moyenne', low: 'Priorité basse' };
 
-export function taskRow(t) {
+/* ============================== Arborescence ============================== */
+
+// Une tâche + ses sous-tâches, récursivement (modèle « dossier »).
+export function taskNode(t) {
+  const s = getState();
+  const kids = L.taskChildren(s.tasks, t.id);
+  const node = h('div', 'task-node');
+  node.append(taskRow(t, kids));
+  if (kids.length && !collapsedTasks.has(t.id)) {
+    const box = h('div', 'task-children');
+    for (const k of kids) box.append(taskNode(k));
+    node.append(box);
+  }
+  return node;
+}
+
+export function taskRow(t, kids) {
+  const s = getState();
   const tk = todayK();
+  if (!kids) kids = L.taskChildren(s.tasks, t.id);
   const done = !!t.completedAt;
+  const depth = L.taskDepth(s.tasks, t);
+  const progress = kids.length ? L.taskProgress(s.tasks, t.id) : null;
 
   const check = h('button', {
     class: 'task-check' + (done ? ' done' : ''),
     'aria-label': done ? 'Rouvrir la tâche' : 'Terminer la tâche',
     onclick: () => {
       if (done) apply({ type: 'task.uncomplete', id: t.id });
-      else if (apply({ type: 'task.complete', id: t.id, ts: Date.now() })) toast('Tâche terminée');
+      else {
+        const openKids = L.subtreeIds(s.tasks, t.id).filter((id) => {
+          const st = s.tasks.find((x) => x.id === id);
+          return st && !st.completedAt;
+        }).length;
+        if (apply({ type: 'task.complete', id: t.id, ts: Date.now() })) {
+          toast(openKids ? 'Tâche terminée avec ses ' + plur(openKids, 'sous-tâche') : 'Tâche terminée');
+        }
+      }
     },
   }, icon('check', 12));
 
@@ -39,22 +69,59 @@ export function taskRow(t) {
   }
   if (done) chips.append(h('span', 'task-chip', frDM(L.dayOfTs(t.completedAt))));
 
-  return h('div', { class: 'task-row' + (done ? ' done' : '') },
-    check,
-    h('span', { class: 'task-title', onclick: () => openTaskModal({ task: t }), title: t.notes || t.title }, t.title),
-    chips,
-    h('span', 'task-actions',
-      h('button', { class: 'btn btn-icon', 'aria-label': 'Modifier', onclick: () => openTaskModal({ task: t }) }, icon('pencil', 14)),
-      h('button', {
-        class: 'btn btn-icon', 'aria-label': 'Supprimer', onclick: async () => {
-          if (await confirmDialog({ title: 'Supprimer cette tâche ?', text: '« ' + t.title + ' » sera supprimée définitivement.' })) {
-            apply({ type: 'task.delete', id: t.id });
-          }
-        },
-      }, icon('trash', 14)),
-    ),
+  const actions = h('span', 'task-actions');
+  if (!done && depth < L.MAX_TASK_DEPTH) {
+    actions.append(h('button', {
+      class: 'btn btn-icon', 'aria-label': 'Ajouter une sous-tâche', title: 'Ajouter une sous-tâche',
+      onclick: () => openTaskModal({ defaults: { parentId: t.id, project: t.project } }),
+    }, icon('plus', 14)));
+  }
+  actions.append(
+    h('button', { class: 'btn btn-icon', 'aria-label': 'Modifier', onclick: () => openTaskModal({ task: t }) }, icon('pencil', 14)),
+    h('button', {
+      class: 'btn btn-icon', 'aria-label': 'Supprimer', onclick: async () => {
+        const nb = L.subtreeIds(getState().tasks, t.id).length;
+        if (await confirmDialog({
+          title: 'Supprimer cette tâche ?',
+          text: '« ' + t.title + ' » sera supprimée définitivement' + (nb ? ', ainsi que ses ' + plur(nb, 'sous-tâche') : '') + '.',
+        })) {
+          apply({ type: 'task.delete', id: t.id });
+        }
+      },
+    }, icon('trash', 14)),
   );
+
+  const main = h('span', 'task-main',
+    h('span', 'task-title-line',
+      h('span', { class: 'task-title', onclick: () => openTaskModal({ task: t }), title: 'Modifier' }, t.title),
+      progress ? h('span', { class: 'task-progress' + (progress.done === progress.total ? ' full' : '') },
+        progress.done + '/' + progress.total) : null,
+    ),
+    t.notes ? h('span', { class: 'task-note', onclick: () => openTaskModal({ task: t }) }, t.notes) : null,
+  );
+
+  // Emplacement fixe du chevron : présent sur toutes les lignes (vide sur les
+  // feuilles) pour un alignement constant, jamais superposé à la case.
+  const slot = h('span', 'task-slot');
+  if (kids.length) {
+    const open = !collapsedTasks.has(t.id);
+    slot.append(h('button', {
+      class: 'task-collapse' + (open ? ' open' : ''),
+      'aria-label': open ? 'Replier les sous-tâches' : 'Déplier les sous-tâches',
+      'aria-expanded': String(open),
+      onclick: (e) => {
+        e.stopPropagation();
+        if (collapsedTasks.has(t.id)) collapsedTasks.delete(t.id);
+        else collapsedTasks.add(t.id);
+        scheduleRender();
+      },
+    }, icon('chevronR', 12)));
+  }
+
+  return h('div', { class: 'task-row' + (done ? ' done' : '') }, slot, check, main, chips, actions);
 }
+
+/* ============================== Vue ============================== */
 
 export function renderTasks(root) {
   const s = getState();
@@ -93,19 +160,19 @@ export function renderTasks(root) {
     const chipRow = h('div', { class: 'chip-row', style: { marginBottom: '18px' } });
     const mk = (val, label) => h('button', {
       class: 'chip' + ((projectFilter || null) === val ? ' on' : ''),
-      onclick: () => { projectFilter = val; rerenderView(root); },
+      onclick: () => { projectFilter = val; scheduleRender(); },
     }, label);
     chipRow.append(mk(null, 'Tous'));
     for (const p of projects) chipRow.append(mk(p, p));
     root.append(chipRow);
   }
 
-  /* sections */
+  /* sections (racines ; les sous-tâches suivent leur parente) */
   const list = h('div');
   const section = (title, items, cls) => {
     if (!items.length) return;
     list.append(h('div', { class: 'task-section-title' + (cls ? ' ' + cls : '') }, title, h('span', 'n', String(items.length))));
-    for (const t of items) list.append(taskRow(t));
+    for (const t of items) list.append(taskNode(t));
   };
   section('En retard', sec.overdue, 'late');
   section('Aujourd’hui', sec.today);
@@ -121,7 +188,7 @@ export function renderTasks(root) {
     const toggle = h('button', { class: 'done-toggle' + (doneOpen ? ' open' : '') },
       icon('chevronR', 14), 'Terminées', h('span', 'n', '· ' + sec.done.length));
     const doneList = h('div', { class: doneOpen ? '' : 'hidden' });
-    for (const t of sec.done.slice(0, 30)) doneList.append(taskRow(t));
+    for (const t of sec.done.slice(0, 30)) doneList.append(taskNode(t));
     if (sec.done.length > 30) doneList.append(h('div', { class: 'chart-note', style: { paddingLeft: '10px' } }, 'Le reste est dans l’Historique.'));
     toggle.addEventListener('click', () => {
       doneOpen = !doneOpen;
@@ -130,11 +197,4 @@ export function renderTasks(root) {
     });
     root.append(toggle, doneList);
   }
-}
-
-function rerenderView(root) {
-  const parent = root.parentNode;
-  const fresh = h('div', { class: 'view', 'data-route': 'taches' });
-  renderTasks(fresh);
-  parent.replaceChild(fresh, root);
 }

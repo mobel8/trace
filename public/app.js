@@ -10,7 +10,17 @@ import { renderHistory } from './views/history.js';
 import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderOnboarding } from './views/onboarding.js';
+import { renderComptes } from './views/comptes.js';
 import { openQuickAdd } from './views/modals.js';
+
+/* ============================== Comptes ============================== */
+
+export const profilId = () => localStorage.getItem('trace-profil');
+export const api = (path) => path + (path.includes('?') ? '&' : '?') + 'p=' + encodeURIComponent(profilId() || '');
+export function changerDeCompte() {
+  localStorage.removeItem('trace-profil');
+  location.reload();
+}
 
 /* ============================== État & synchro ============================== */
 
@@ -21,7 +31,8 @@ export const getState = () => state;
 export const todayK = () => L.todayKey();
 
 async function fetchState() {
-  const r = await fetch('/api/state');
+  const r = await fetch(api('/api/state'));
+  if (r.status === 404) { changerDeCompte(); throw new Error('profil inconnu'); }
   if (!r.ok) throw new Error('état illisible');
   state = (await r.json()).state;
 }
@@ -42,7 +53,7 @@ export function apply(op) {
   const localRev = state.rev;
   scheduleRender();
   sendQueue = sendQueue.then(async () => {
-    const r = await fetch('/api/op', {
+    const r = await fetch(api('/api/op'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op }),
@@ -252,6 +263,12 @@ document.addEventListener('keydown', (e) => {
 async function boot() {
   appEl = document.getElementById('app');
   appEl.hidden = false;
+  // Pas de compte choisi → écran de sélection des comptes.
+  if (!profilId()) {
+    appEl.style.display = 'block';
+    renderComptes(appEl);
+    return;
+  }
   try {
     await fetchState();
   } catch {

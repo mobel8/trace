@@ -1,7 +1,7 @@
 // logic.js — Trace : logique métier pure, partagée serveur (Node) et client (navigateur).
 // Aucune dépendance, aucun accès horloge/fichier : tout reçoit ses entrées en paramètres.
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 export const DAY_MS = 86400000;
 
 /* ============================== Dates (heure LOCALE) ============================== */
@@ -192,6 +192,14 @@ export function reduce(state, op) {
       req(isNum(t.createdAt), 'createdAt manquant');
       req(t.due == null || isValidKey(t.due), 'échéance invalide');
       req(t.priority == null || PRIORITIES.includes(t.priority), 'priorité invalide');
+      let parentId = null;
+      if (t.parentId != null) {
+        const parent = s.tasks.find((x) => x.id === t.parentId);
+        req(parent, 'tâche parente inconnue');
+        req(!parent.completedAt, 'la tâche parente est terminée');
+        req(taskDepth(s.tasks, parent) < MAX_TASK_DEPTH, 'profondeur maximale atteinte (' + (MAX_TASK_DEPTH + 1) + ' niveaux)');
+        parentId = t.parentId;
+      }
       s.tasks = [...s.tasks, {
         id: t.id,
         title: cleanText(t.title, 200),
@@ -199,6 +207,7 @@ export function reduce(state, op) {
         project: isStr(t.project) ? t.project.trim().slice(0, 40) : '',
         priority: t.priority || null,
         due: t.due || null,
+        parentId,
         createdAt: t.createdAt,
         completedAt: null,
       }];
@@ -213,6 +222,19 @@ export function reduce(state, op) {
       if ('project' in p) { req(isStr(p.project), 'projet invalide'); next.project = p.project.trim().slice(0, 40); }
       if ('priority' in p) { req(p.priority == null || PRIORITIES.includes(p.priority), 'priorité invalide'); next.priority = p.priority || null; }
       if ('due' in p) { req(p.due == null || isValidKey(p.due), 'échéance invalide'); next.due = p.due || null; }
+      if ('parentId' in p) {
+        if (p.parentId == null) next.parentId = null;
+        else {
+          req(p.parentId !== t.id, 'une tâche ne peut pas être sa propre parente');
+          const parent = s.tasks.find((x) => x.id === p.parentId);
+          req(parent, 'tâche parente inconnue');
+          req(!parent.completedAt, 'la tâche parente est terminée');
+          req(!subtreeIds(s.tasks, t.id).includes(p.parentId), 'impossible : la cible est une sous-tâche de celle-ci');
+          req(taskDepth(s.tasks, parent) + 1 + subtreeHeight(s.tasks, t.id) <= MAX_TASK_DEPTH,
+            'profondeur maximale atteinte (' + (MAX_TASK_DEPTH + 1) + ' niveaux)');
+          next.parentId = p.parentId;
+        }
+      }
       s.tasks = s.tasks.map((x) => (x.id === t.id ? next : x));
       return s;
     }
@@ -220,18 +242,31 @@ export function reduce(state, op) {
       const t = findTask(op.id);
       req(isNum(op.ts), 'ts manquant');
       req(!t.completedAt, 'déjà terminée');
-      s.tasks = s.tasks.map((x) => (x.id === t.id ? { ...x, completedAt: op.ts } : x));
+      // Terminer un « dossier » termine tout son contenu encore ouvert.
+      const ids = new Set([t.id, ...subtreeIds(s.tasks, t.id)]);
+      s.tasks = s.tasks.map((x) => (ids.has(x.id) && !x.completedAt ? { ...x, completedAt: op.ts } : x));
       return s;
     }
     case 'task.uncomplete': {
       const t = findTask(op.id);
       req(t.completedAt, 'pas terminée');
-      s.tasks = s.tasks.map((x) => (x.id === t.id ? { ...x, completedAt: null } : x));
+      // Rouvrir une sous-tâche rouvre ses parents terminés (sinon elle serait invisible).
+      const revive = new Set([t.id]);
+      let cur = t;
+      for (let i = 0; i < 8 && cur.parentId; i++) {
+        const parent = s.tasks.find((x) => x.id === cur.parentId);
+        if (!parent) break;
+        if (parent.completedAt) revive.add(parent.id);
+        cur = parent;
+      }
+      s.tasks = s.tasks.map((x) => (revive.has(x.id) ? { ...x, completedAt: null } : x));
       return s;
     }
     case 'task.delete': {
       findTask(op.id);
-      s.tasks = s.tasks.filter((x) => x.id !== op.id);
+      // Suppression en cascade : le dossier part avec son contenu.
+      const ids = new Set([op.id, ...subtreeIds(s.tasks, op.id)]);
+      s.tasks = s.tasks.filter((x) => !ids.has(x.id));
       return s;
     }
 
@@ -422,6 +457,46 @@ export function habitDueToday(state, habit, todayK, weekStart = 1) {
 
 /* ============================== Tâches ============================== */
 
+// Profondeur maximale d'imbrication (0 = racine) : 4 niveaux au total.
+export const MAX_TASK_DEPTH = 3;
+
+export function taskChildren(tasks, id) {
+  return tasks.filter((t) => t.parentId === id).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function taskDepth(tasks, t) {
+  let d = 0, cur = t;
+  for (let i = 0; i < 8 && cur && cur.parentId; i++) {
+    cur = tasks.find((x) => x.id === cur.parentId);
+    if (cur) d++;
+  }
+  return d;
+}
+
+// Tous les descendants (la tâche elle-même exclue).
+export function subtreeIds(tasks, id) {
+  const out = [];
+  const stack = [id];
+  while (stack.length && out.length < 500) {
+    const cur = stack.pop();
+    for (const t of tasks) if (t.parentId === cur) { out.push(t.id); stack.push(t.id); }
+  }
+  return out;
+}
+
+// Hauteur du sous-arbre (0 = feuille).
+export function subtreeHeight(tasks, id) {
+  const kids = tasks.filter((t) => t.parentId === id);
+  if (!kids.length) return 0;
+  return 1 + Math.max(...kids.map((k) => subtreeHeight(tasks, k.id)));
+}
+
+// Avancement des enfants DIRECTS d'une tâche.
+export function taskProgress(tasks, id) {
+  const kids = tasks.filter((t) => t.parentId === id);
+  return { done: kids.filter((k) => k.completedAt).length, total: kids.length };
+}
+
 const PRIO_RANK = { high: 0, med: 1, low: 2 };
 function taskSort(a, b) {
   const pa = a.priority ? PRIO_RANK[a.priority] : 3;
@@ -435,9 +510,13 @@ function taskSort(a, b) {
   return a.createdAt - b.createdAt;
 }
 
+// Les sections ne classent que les tâches RACINES : les sous-tâches vivent
+// sous leur parente, où qu'elle soit affichée (modèle « dossier »).
 export function taskSections(tasks, todayK) {
-  const open = tasks.filter((t) => !t.completedAt);
-  const done = tasks.filter((t) => t.completedAt).sort((a, b) => b.completedAt - a.completedAt);
+  const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
+  const isRoot = (t) => !t.parentId || !byId[t.parentId];
+  const open = tasks.filter((t) => !t.completedAt && isRoot(t));
+  const done = tasks.filter((t) => t.completedAt && isRoot(t)).sort((a, b) => b.completedAt - a.completedAt);
   const overdue = open.filter((t) => t.due && t.due < todayK).sort(taskSort);
   const today = open.filter((t) => t.due === todayK).sort(taskSort);
   const upcoming = open.filter((t) => t.due && t.due > todayK).sort(taskSort);
@@ -522,7 +601,11 @@ export function timeline(state, { types, query, todayK, days = 14, beforeK = nul
   const events = [];
 
   if (active.includes('task')) {
-    for (const t of state.tasks) if (t.completedAt) events.push({ kind: 'task', ts: t.completedAt, title: t.title, project: t.project, task: t });
+    for (const t of state.tasks) {
+      if (!t.completedAt) continue;
+      const parent = t.parentId ? taskById[t.parentId] : null;
+      events.push({ kind: 'task', ts: t.completedAt, title: t.title, project: t.project, parentTitle: parent ? parent.title : null, task: t });
+    }
   }
   if (active.includes('habit')) {
     for (const [k, day] of Object.entries(state.habitLogs)) {

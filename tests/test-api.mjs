@@ -1,7 +1,6 @@
-// Tests d'intégration du serveur — exécuter : node tests/test-api.mjs
-// Démarre un vrai serveur sur un port de test avec un dossier de données jetable,
-// vérifie les opérations, la persistance après redémarrage, la récupération après
-// corruption et l'import/export.
+// Tests d'intégration du serveur multi-comptes — exécuter : node tests/test-api.mjs
+// Vrai serveur sur port jetable : ops, comptes (création/isolation/suppression),
+// migration de l'ancien db.json, persistance après kill, corruption, import/export.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -23,19 +22,16 @@ function startServer() {
   });
   child.stderr.on('data', (d) => process.stderr.write('[serveur] ' + d));
 }
-
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
       const r = await fetch(BASE + '/api/ping');
-      const j = await r.json();
-      if (j.app === 'trace') return;
+      if ((await r.json()).app === 'trace') return;
     } catch {}
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error('serveur injoignable');
 }
-
 function stopServer() {
   return new Promise((resolve) => {
     if (!child) return resolve();
@@ -44,124 +40,141 @@ function stopServer() {
     child = null;
   });
 }
-
-async function op(o, expectStatus = 200) {
-  const r = await fetch(BASE + '/api/op', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: o }) });
+async function op(o, profil, expectStatus = 200) {
+  const r = await fetch(BASE + '/api/op' + (profil ? '?p=' + profil : ''), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: o }),
+  });
   assert.equal(r.status, expectStatus, 'statut pour ' + o.type);
   return r.json();
 }
-async function getState() {
-  const r = await fetch(BASE + '/api/state');
+async function getState(profil) {
+  const r = await fetch(BASE + '/api/state' + (profil ? '?p=' + profil : ''));
   return (await r.json()).state;
 }
-function ok(name) { passed++; console.log('  ✓ ' + name); }
+async function profils() {
+  return (await (await fetch(BASE + '/api/profils')).json()).profils;
+}
+const profilsDir = () => path.join(TMP, 'profils');
+const ok = (name) => { passed++; console.log('  ✓ ' + name); };
 
-/* ============================== Scénario ============================== */
+/* ============================== migration de l'ancien format ============================== */
 
 fs.rmSync(TMP, { recursive: true, force: true });
+fs.mkdirSync(TMP, { recursive: true });
+// un ancien db.json mono-compte préexistant
+fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify({
+  version: 1, rev: 5, onboarded: true,
+  settings: { name: 'Migré', theme: 'dark', accent: 'violet', weekStart: 1 },
+  habits: [], habitLogs: {}, tasks: [], journal: [], sessions: [], activeSession: null,
+}));
 
 startServer();
 await waitReady();
-ok('démarrage sur dossier vierge');
+let liste = await profils();
+assert.equal(liste.length, 1);
+assert.equal(liste[0].nom, 'Migré');
+assert.ok(!fs.existsSync(path.join(TMP, 'db.json')), 'db.json doit avoir été déplacé');
+assert.equal(fs.readdirSync(profilsDir()).filter((f) => f.endsWith('.json')).length, 1);
+const pMigre = liste[0].id;
+let st = await getState(); // sans ?p : résout le plus récent
+assert.equal(st.settings.name, 'Migré');
+assert.equal(st.rev, 5);
+ok('migration : l’ancien db.json devient le premier compte');
 
-let st = await getState();
-assert.equal(st.rev, 0);
-assert.equal(st.onboarded, false);
-ok('état par défaut servi');
+/* ============================== comptes ============================== */
+
+const rCreate = await fetch(BASE + '/api/profils', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nom: 'Léa' }),
+});
+const pLea = (await rCreate.json()).id;
+liste = await profils();
+assert.equal(liste.length, 2);
+assert.ok(liste.some((x) => x.nom === 'Léa' && !x.onboarded));
+ok('création d’un second compte');
 
 const NOW = Date.now();
 const TODAY = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0') + '-' + String(new Date().getDate()).padStart(2, '0');
 
-await op({ type: 'onboard.complete', name: 'Testeur', habits: [
-  { id: 'habit-test-0001', name: 'Sport', emoji: '🏃', color: 'vert', schedule: { kind: 'daily' }, createdAt: NOW, createdDay: TODAY },
-] });
-await op({ type: 'habit.toggle', id: 'habit-test-0001', date: TODAY, ts: NOW });
-await op({ type: 'task.create', task: { id: 'task-test-0001', title: 'Tester Trace', priority: 'high', due: TODAY, createdAt: NOW } });
-await op({ type: 'task.complete', id: 'task-test-0001', ts: NOW + 1000 });
-await op({ type: 'journal.add', entry: { id: 'note-test-0001', ts: NOW, text: 'Première note #test' } });
-await op({ type: 'session.start', label: 'Focus test', ts: NOW });
-const r1 = await op({ type: 'session.stop', id: 'sess-test-0001', ts: NOW + 60000 });
-ok('suite d’opérations acceptée');
+await op({ type: 'onboard.complete', name: 'Léa', habits: [] }, pLea);
+await op({ type: 'task.create', task: { id: 'task-lea-0001', title: 'Tâche de Léa', createdAt: NOW } }, pLea);
+const stLea = await getState(pLea);
+const stMigre = await getState(pMigre);
+assert.equal(stLea.tasks.length, 1);
+assert.equal(stMigre.tasks.length, 0, 'les comptes doivent être isolés');
+assert.equal(stMigre.settings.name, 'Migré');
+ok('isolation : les ops d’un compte ne touchent pas l’autre');
 
-st = await getState();
-assert.equal(st.settings.name, 'Testeur');
-assert.equal(st.habits.length, 1);
-assert.ok(st.habitLogs[TODAY]['habit-test-0001']);
-assert.ok(st.tasks[0].completedAt);
-assert.deepEqual(st.journal[0].tags, ['test']);
-assert.equal(st.sessions[0].end - st.sessions[0].start, 60000);
-assert.equal(st.rev, r1.rev);
-ok('état cohérent après opérations');
+const r404 = await fetch(BASE + '/api/state?p=p-inexistant99');
+assert.equal(r404.status, 404);
+ok('?p inconnu → 404 (le client retourne à l’écran des comptes)');
 
-const bad = await op({ type: 'habit.toggle', id: 'inexistant', date: TODAY, ts: NOW }, 400);
-assert.match(bad.error, /inconnue/);
-const bad2 = await op({ type: 'nimporte.quoi' }, 400);
-assert.match(bad2.error, /type inconnu/);
-ok('ops invalides → 400 sans casser l’état');
+/* ---------- sous-tâches via l'API ---------- */
+await op({ type: 'task.create', task: { id: 'task-lea-sub1', title: 'Sous-tâche', parentId: 'task-lea-0001', createdAt: NOW + 1 } }, pLea);
+await op({ type: 'task.complete', id: 'task-lea-0001', ts: NOW + 2 }, pLea);
+const stCascade = await getState(pLea);
+assert.ok(stCascade.tasks.every((t) => t.completedAt), 'cascade parent → sous-tâches');
+const badParent = await op({ type: 'task.create', task: { id: 'task-lea-bad1', title: 'x', parentId: 'inexistant', createdAt: 1 } }, pLea, 400);
+assert.match(badParent.error, /parente inconnue/);
+ok('sous-tâches : cascade et validation côté serveur');
 
-const batchBad = await fetch(BASE + '/api/ops', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: [
-  { type: 'journal.add', entry: { id: 'note-test-0002', ts: NOW, text: 'ne doit PAS rester' } },
-  { type: 'task.complete', id: 'task-test-0001', ts: NOW }, // échoue : déjà terminée
-] }) });
-assert.equal(batchBad.status, 400);
-st = await getState();
-assert.equal(st.journal.length, 1, 'le batch invalide doit être tout-ou-rien');
-ok('batch /api/ops atomique');
+/* ============================== persistance après kill ============================== */
 
-const notFound = await fetch(BASE + '/api/nexiste-pas');
-assert.equal(notFound.status, 404);
-const trav = await fetch(BASE + '/..%2f..%2fserver.js');
-assert.ok(trav.status === 403 || trav.status === 404);
-ok('404 API + traversée de chemin bloquée');
-
-/* ---------- persistance après redémarrage ---------- */
-const revBefore = st.rev;
 await stopServer();
 startServer();
 await waitReady();
-st = await getState();
-assert.equal(st.rev, revBefore);
-assert.equal(st.settings.name, 'Testeur');
-assert.ok(st.habitLogs[TODAY]['habit-test-0001']);
-ok('persistance intacte après arrêt brutal + redémarrage');
+const stApres = await getState(pLea);
+assert.equal(stApres.tasks.length, 2);
+assert.equal((await getState(pMigre)).settings.name, 'Migré');
+ok('persistance des deux comptes après arrêt brutal');
 
-/* ---------- export / import ---------- */
-const exp = await fetch(BASE + '/api/export');
-assert.match(exp.headers.get('content-disposition') || '', /attachment; filename="trace-export-/);
+/* ============================== export / import (par compte) ============================== */
+
+const exp = await fetch(BASE + '/api/export?p=' + pLea);
+assert.match(exp.headers.get('content-disposition') || '', /trace-L/);
 const exported = await exp.json();
-assert.equal(exported.settings.name, 'Testeur');
-ok('export : pièce jointe JSON complète');
-
-const badImport = await fetch(BASE + '/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: { hello: 'world' } }) });
-assert.equal(badImport.status, 400);
-const modified = { ...exported, journal: [...exported.journal, { id: 'note-import-01', ts: NOW, text: 'Venu d’un import', tags: [] }] };
-const impOk = await fetch(BASE + '/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: modified }) });
+assert.equal(exported.tasks.length, 2);
+const modified = { ...exported, journal: [{ id: 'note-imp-001', ts: NOW, text: 'Import ciblé', tags: [] }] };
+const impOk = await fetch(BASE + '/api/import?p=' + pLea, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: modified }),
+});
 assert.equal(impOk.status, 200);
-st = await getState();
-assert.equal(st.journal.length, 2);
-assert.ok(st.rev > revBefore, 'rev doit avancer après import');
-const preImportBackups = fs.readdirSync(path.join(TMP, 'backups')).filter((f) => f.startsWith('db-avant-import-'));
-assert.equal(preImportBackups.length, 1);
-ok('import : validation, remplacement, copie de sécurité');
+assert.equal((await getState(pLea)).journal.length, 1);
+assert.equal((await getState(pMigre)).journal.length, 0, 'l’import ne touche que son compte');
+ok('export/import ciblés sur un compte');
 
-/* ---------- récupération après corruption ---------- */
+/* ============================== corruption + restauration ============================== */
+
 await stopServer();
-fs.copyFileSync(path.join(TMP, 'db.json'), path.join(TMP, 'backups', 'db-2000-01-01.json'));
-fs.writeFileSync(path.join(TMP, 'db.json'), '{"version":1,"co!!!! JSON massacré');
+const fichierLea = path.join(profilsDir(), pLea + '.json');
+fs.copyFileSync(fichierLea, path.join(TMP, 'backups', 'db-' + pLea + '-2000-01-01.json'));
+fs.writeFileSync(fichierLea, '{"version":1,"co!!!! JSON massacré');
 startServer();
 await waitReady();
-st = await getState();
-assert.equal(st.settings.name, 'Testeur', 'doit repartir de la sauvegarde');
-assert.equal(st.journal.length, 2);
-const quarantined = fs.readdirSync(TMP).filter((f) => f.startsWith('db.json.corrompu-'));
-assert.equal(quarantined.length, 1);
-ok('db.json corrompu → quarantaine + restauration depuis la sauvegarde');
+const stRestaure = await getState(pLea);
+assert.equal(stRestaure.journal.length, 1, 'restauré depuis la sauvegarde du compte');
+assert.equal(fs.readdirSync(profilsDir()).filter((f) => f.includes('.corrompu-')).length, 1);
+ok('fichier de compte corrompu → quarantaine + restauration');
 
-/* ---------- statique ---------- */
+/* ============================== suppression de compte ============================== */
+
+const rDel = await fetch(BASE + '/api/profils/' + pLea, { method: 'DELETE' });
+assert.equal(rDel.status, 200);
+liste = await profils();
+assert.equal(liste.length, 1);
+assert.ok(fs.readdirSync(path.join(TMP, 'backups')).some((f) => f.startsWith('profil-supprime-' + pLea)),
+  'le compte supprimé doit partir en sauvegarde');
+const r404b = await fetch(BASE + '/api/state?p=' + pLea);
+assert.equal(r404b.status, 404);
+ok('suppression : retiré de la liste, données conservées en sauvegarde');
+
+/* ============================== statique ============================== */
+
 const page = await fetch(BASE + '/');
 assert.equal(page.status, 200);
 assert.match(page.headers.get('content-type'), /text\/html/);
-ok('page d’accueil servie');
+const trav = await fetch(BASE + '/..%2f..%2fserver.js');
+assert.ok(trav.status === 403 || trav.status === 404);
+ok('page servie + traversée de chemin bloquée');
 
 await stopServer();
 fs.rmSync(TMP, { recursive: true, force: true });

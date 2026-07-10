@@ -1,7 +1,7 @@
 // views/modals.js — modales partagées : édition/création de tâche, saisie rapide.
 import { h, openModal, confirmDialog, uid, toast } from '../ui.js';
 import { icon } from '../icons.js';
-import { addDays } from '../logic.js';
+import { addDays, taskDepth, subtreeIds, subtreeHeight, MAX_TASK_DEPTH } from '../logic.js';
 import { getState, apply, todayK } from '../app.js';
 
 const PRIO_OPTS = [[null, 'Aucune'], ['low', 'Basse'], ['med', 'Moyenne'], ['high', 'Haute']];
@@ -34,6 +34,22 @@ export function openTaskModal({ task = null, defaults = {} } = {}) {
   const projInput = h('input', { class: 'input', list: 'tm-projects', placeholder: 'Projet (facultatif)', value: task ? task.project : (defaults.project || ''), maxlength: 40 });
   const projList = h('datalist', { id: 'tm-projects' }, projects.map((p) => h('option', { value: p })));
 
+  /* tâche parente (sous-tâches en arborescence) */
+  const currentParent = task ? task.parentId : (defaults.parentId || null);
+  const excluded = task ? new Set([task.id, ...subtreeIds(s.tasks, task.id)]) : new Set();
+  const hauteur = task ? subtreeHeight(s.tasks, task.id) : 0;
+  const eligibles = s.tasks
+    .filter((c) => !c.completedAt && !excluded.has(c.id)
+      && taskDepth(s.tasks, c) + 1 + hauteur <= MAX_TASK_DEPTH)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const parentSel = h('select', { class: 'input' },
+    h('option', { value: '' }, 'Aucune (tâche racine)'),
+    eligibles.map((c) => {
+      const o = h('option', { value: c.id }, '  '.repeat(taskDepth(s.tasks, c)) + (taskDepth(s.tasks, c) ? '↳ ' : '') + c.title.slice(0, 60));
+      if (c.id === currentParent) o.setAttribute('selected', '');
+      return o;
+    }));
+
   const dateInput = h('input', { class: 'input', type: 'date', style: { width: '150px' } });
   const dueChips = h('div', 'chip-row');
   const paintDue = () => {
@@ -57,13 +73,14 @@ export function openTaskModal({ task = null, defaults = {} } = {}) {
   const save = () => {
     const title = titleInput.value.trim();
     if (!title) { titleInput.focus(); return; }
+    const parentId = parentSel.value || null;
     let ok;
     if (task) {
-      ok = apply({ type: 'task.update', id: task.id, patch: { title, notes: notesInput.value, project: projInput.value, priority: prio, due } });
+      ok = apply({ type: 'task.update', id: task.id, patch: { title, notes: notesInput.value, project: projInput.value, priority: prio, due, parentId } });
       if (ok) toast('Tâche modifiée');
     } else {
-      ok = apply({ type: 'task.create', task: { id: uid('task'), title, notes: notesInput.value, project: projInput.value.trim(), priority: prio, due, createdAt: Date.now() } });
-      if (ok) toast('Tâche ajoutée');
+      ok = apply({ type: 'task.create', task: { id: uid('task'), title, notes: notesInput.value, project: projInput.value.trim(), priority: prio, due, parentId, createdAt: Date.now() } });
+      if (ok) toast(parentId ? 'Sous-tâche ajoutée' : 'Tâche ajoutée');
     }
     if (ok) close();
   };
@@ -91,6 +108,7 @@ export function openTaskModal({ task = null, defaults = {} } = {}) {
       h('label', 'field', 'Priorité', seg(PRIO_OPTS, prio, (v) => { prio = v; })),
       h('label', 'field', 'Projet', projInput, projList),
     ),
+    h('label', 'field', 'Tâche parente', parentSel),
     h('label', 'field', 'Échéance', dueChips, dateInput),
   );
   body.addEventListener('keydown', (e) => {

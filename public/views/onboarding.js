@@ -1,7 +1,7 @@
 // views/onboarding.js — premier lancement : prénom + habitudes de départ.
 import { h, uid } from '../ui.js';
 import { logo } from '../icons.js';
-import { apply, todayK } from '../app.js';
+import { apply, todayK, getState } from '../app.js';
 
 const STARTERS = [
   { emoji: '🏃', name: 'Sport', color: 'vert' },
@@ -19,6 +19,9 @@ export function renderOnboarding(root) {
   const selected = new Set();
 
   const nameInput = h('input', { class: 'input', placeholder: 'Ton prénom', maxlength: 40, style: { height: '40px' } });
+  // Compte créé depuis l'écran de sélection : le prénom est déjà connu.
+  const dejaConnu = (getState().settings.name || '').trim();
+  if (dejaConnu) nameInput.value = dejaConnu;
 
   const chipRow = h('div', 'chip-row');
   for (const [i, st] of STARTERS.entries()) {

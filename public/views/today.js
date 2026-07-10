@@ -3,7 +3,7 @@ import { h, uid, toast, burst, fmtTime, plur, frDayFull, cap, emptyState } from 
 import { icon } from '../icons.js';
 import * as L from '../logic.js';
 import { getState, apply, todayK, go } from '../app.js';
-import { taskRow } from './tasks.js';
+import { taskNode } from './tasks.js';
 import { hueVar, schedLabel } from './habits.js';
 
 function greeting(name, hour) {
@@ -79,17 +79,17 @@ export function renderToday(root) {
     h('button', { class: 'btn btn-subtle btn-sm', onclick: () => go('taches') }, 'Tout voir')));
   if (sec.overdue.length) {
     tasksCard.append(h('div', { class: 'task-section-title late' }, 'En retard', h('span', 'n', String(sec.overdue.length))));
-    for (const t of sec.overdue) tasksCard.append(taskRow(t));
+    for (const t of sec.overdue) tasksCard.append(taskNode(t));
   }
   if (sec.today.length) {
     tasksCard.append(h('div', 'task-section-title', 'Aujourd’hui'));
-    for (const t of sec.today) tasksCard.append(taskRow(t));
+    for (const t of sec.today) tasksCard.append(taskNode(t));
   }
   if (!sec.overdue.length && !sec.today.length) {
     const next = [...sec.upcoming, ...sec.someday].slice(0, 3);
     if (next.length) {
       tasksCard.append(h('div', 'task-section-title', 'À suivre'));
-      for (const t of next) tasksCard.append(taskRow(t));
+      for (const t of next) tasksCard.append(taskNode(t));
     } else {
       tasksCard.append(emptyState('spark', 'Rien à faire pour aujourd’hui', 'Profite, ou note ce qui te trotte dans la tête.'));
     }

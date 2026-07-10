@@ -89,7 +89,9 @@ function eventRow(ev) {
     ico = 'check'; ec = 'var(--accent)';
     body = h('div', 'event-body',
       h('div', 'txt', ev.title),
-      h('div', 'meta', (ev.project ? ev.project + ' · ' : '') + 'tâche terminée'));
+      h('div', 'meta',
+        (ev.parentTitle ? 'dans « ' + ev.parentTitle + ' » · ' : '')
+        + (ev.project ? ev.project + ' · ' : '') + 'tâche terminée'));
   } else if (ev.kind === 'habit') {
     ico = 'repeat'; ec = hueVar(ev.habit.color);
     body = h('div', 'event-body',

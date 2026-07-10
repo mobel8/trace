@@ -2,7 +2,7 @@
 import { h, toast, confirmDialog } from '../ui.js';
 import { icon } from '../icons.js';
 import { ACCENTS, defaultState } from '../logic.js';
-import { getState, apply } from '../app.js';
+import { getState, apply, api, profilId, changerDeCompte } from '../app.js';
 
 export function renderSettings(root) {
   const s = getState();
@@ -46,6 +46,25 @@ export function renderSettings(root) {
     row('Début de semaine', 'Pour les séries et le bilan', weekSeg),
   ]));
 
+  /* ---------- compte ---------- */
+  root.append(card('Compte', [
+    row('Changer de compte', 'Retourner à l’écran de sélection des comptes',
+      h('button', { class: 'btn btn-ghost', onclick: () => changerDeCompte() }, icon('restore', 15), 'Changer')),
+    row('Supprimer ce compte', 'Il disparaît de l’écran de sélection (ses données restent en sauvegarde)',
+      h('button', {
+        class: 'btn btn-danger', onclick: async () => {
+          const sure = await confirmDialog({
+            title: 'Supprimer ce compte ?',
+            text: 'Le compte « ' + (s.settings.name || 'Sans nom') + ' » sera retiré. Ses données partent dans data/backups, rien n’est détruit.',
+            confirmLabel: 'Supprimer',
+          });
+          if (!sure) return;
+          await fetch('/api/profils/' + profilId(), { method: 'DELETE' });
+          changerDeCompte();
+        },
+      }, icon('trash', 15), 'Supprimer')),
+  ]));
+
   /* ---------- données ---------- */
   const fileInput = h('input', { type: 'file', accept: '.json,application/json', style: { display: 'none' } });
   fileInput.addEventListener('change', async () => {
@@ -60,7 +79,7 @@ export function renderSettings(root) {
       confirmLabel: 'Importer', danger: false,
     });
     if (!okGo) { fileInput.value = ''; return; }
-    const r = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: parsed }) });
+    const r = await fetch(api('/api/import'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: parsed }) });
     if (r.ok) location.reload();
     else {
       const err = await r.json().catch(() => ({}));
@@ -71,7 +90,7 @@ export function renderSettings(root) {
 
   root.append(card('Données', [
     row('Exporter', 'Toutes tes données dans un fichier JSON',
-      h('a', { class: 'btn btn-ghost', href: '/api/export', download: '' }, icon('download', 15), 'Exporter')),
+      h('a', { class: 'btn btn-ghost', href: api('/api/export'), download: '' }, icon('download', 15), 'Exporter')),
     row('Importer', 'Restaurer un export Trace',
       h('button', { class: 'btn btn-ghost', onclick: () => fileInput.click() }, icon('upload', 15), 'Importer', fileInput)),
     row('Tout effacer', 'Repartir de zéro (une sauvegarde est gardée côté serveur)',
@@ -83,7 +102,7 @@ export function renderSettings(root) {
             confirmLabel: 'Tout effacer',
           });
           if (!sure) return;
-          const r = await fetch('/api/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: defaultState() }) });
+          const r = await fetch(api('/api/import'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: defaultState() }) });
           if (r.ok) location.reload();
         },
       }, icon('trash', 15), 'Effacer')),
