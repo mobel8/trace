@@ -89,7 +89,9 @@ let lastRenderedDay = null;
 export function scheduleRender() {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => { renderQueued = false; render(); });
+  // setTimeout plutôt que requestAnimationFrame : rAF est suspendu fenêtre en
+  // arrière-plan, le rendu serait différé jusqu'au retour au premier plan.
+  setTimeout(() => { renderQueued = false; render(); }, 0);
 }
 
 function applyTheme() {
