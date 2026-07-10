@@ -43,6 +43,26 @@ export function renderStats(root) {
   heatCard.append(heatBox);
   root.append(heatCard);
 
+  /* ---------- régularité des tâches (dézoom productivité) ---------- */
+  const tachesCard = h('div', { class: 'card', style: { marginBottom: '16px' } });
+  tachesCard.append(h('div', 'card-title', icon('tasks', 15), 'Régularité des tâches', h('span', 'spacer'),
+    h('span', 'card-sub', 'tâches terminées, jour par jour · 6 mois')));
+  const actTaches = {};
+  const fromHeat = L.addDays(tk, -7 * 26);
+  for (const t of s.tasks) {
+    if (!t.completedAt) continue;
+    const k = L.dayOfTs(t.completedAt);
+    if (k < fromHeat || k > tk) continue;
+    (actTaches[k] || (actTaches[k] = { count: 0 })).count++;
+  }
+  const tachesBox = h('div');
+  activityHeatmap(tachesBox, {
+    act: actTaches, weeks: 26, todayK: tk, weekStart: ws,
+    label: 'tâche', vide: 'Aucune tâche terminée pour le moment — la première fera le premier carré.',
+  });
+  tachesCard.append(tachesBox);
+  root.append(tachesCard);
+
   /* ---------- barres ---------- */
   const weeks = L.tasksPerWeek(s, tk, 10, ws);
   const days = L.focusPerDay(s, tk, 14);

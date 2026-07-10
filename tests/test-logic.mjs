@@ -4,7 +4,7 @@ import {
   dateKey, parseKey, todayKey, addDays, diffDays, weekday, weekStartOf, isValidKey, dayOfTs,
   defaultState, reduce,
   habitDoneOn, isScheduledDay, currentStreak, bestStreak, completionRate, habitDueToday,
-  habitEntry, reussitesAuPalier, pretAMonter, estJalon, rateDernierJourPrevu, bonus30j,
+  habitEntry, reussitesAuPalier, pretAMonter, estJalon, rateDernierJourPrevu, bonus30j, habitOkOn, habitNivOn, depassements,
   taskSections, projectsOf, parseTags,
   taskChildren, taskDepth, subtreeIds, subtreeHeight, taskProgress,
   activityByDay, momentum, focusToday, timeline, tasksPerWeek, focusPerDay,
@@ -350,7 +350,7 @@ ok('création avec paliers, seuil, bonus et emoji neutre', () => {
 ok('toggle nouveau format + rétrocompatibilité ancien ts', () => {
   let s = seedPaliers();
   s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-05', ts: TS('2026-07-05') });
-  assert.deepEqual(habitEntry(s, HP.id, '2026-07-05'), { t: TS('2026-07-05') });
+  assert.deepEqual(habitEntry(s, HP.id, '2026-07-05'), { t: TS('2026-07-05'), niv: 1, ok: true });
   // ancienne donnée : un simple nombre
   s = { ...s, habitLogs: { ...s.habitLogs, '2026-07-04': { [HP.id]: 12345 } } };
   assert.deepEqual(habitEntry(s, HP.id, '2026-07-04'), { t: 12345 });
@@ -396,6 +396,49 @@ ok('palierSet : monte, le compteur repart, bornes vérifiées', () => {
   // redescendre est permis (échec sans honte)
   s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 0, today: '2026-07-06' });
   assert.equal(s.habits[0].palier, 0);
+});
+ok('habit.niveau : sous le quota = présence sans série, au-delà = dépassement', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 1, today: '2026-07-02' }); // quota = niveau 2
+  // niveau 1 (sous le quota) : présent mais la série ne compte pas
+  s = reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-08', niv: 1, ts: TS('2026-07-08') });
+  assert.equal(habitDoneOn(s, HP.id, '2026-07-08'), true, 'présence enregistrée');
+  assert.equal(habitOkOn(s, HP.id, '2026-07-08'), false, 'quota non atteint');
+  assert.equal(habitNivOn(s, HP.id, '2026-07-08'), 1);
+  // niveau 3 (au-delà) : ok + dépassement compté
+  s = reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-09', niv: 3, ts: TS('2026-07-09') });
+  assert.equal(habitOkOn(s, HP.id, '2026-07-09'), true);
+  assert.equal(depassements(s, s.habits[0], TODAY, 14), 1);
+  // série : le 08 (partiel) casse la chaîne, le 09 (ok) compte
+  assert.equal(currentStreak(s, s.habits[0], '2026-07-09').n, 1);
+  // consolidation : seuls les jours ≥ quota comptent
+  assert.equal(reussitesAuPalier(s, s.habits[0], TODAY), 1);
+  // niveau 0 = décocher
+  s = reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-09', niv: 0, ts: 1 });
+  assert.equal(habitDoneOn(s, HP.id, '2026-07-09'), false);
+  throws(() => reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-09', niv: 9, ts: 1 }), 'hors bornes');
+});
+ok('habit.niveau préserve note et bonus, ok figé au moment de la coche', () => {
+  let s = seedPaliers(); // quota = niveau 1
+  s = reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-08', niv: 2, ts: TS('2026-07-08') });
+  s = reduce(s, { type: 'habit.note', id: HP.id, date: '2026-07-08', note: 'Bien au-dessus' });
+  s = reduce(s, { type: 'habit.bonusToggle', id: HP.id, date: '2026-07-08' });
+  s = reduce(s, { type: 'habit.niveau', id: HP.id, date: '2026-07-08', niv: 3, ts: 999 });
+  const e = habitEntry(s, HP.id, '2026-07-08');
+  assert.equal(e.note, 'Bien au-dessus');
+  assert.equal(e.bonus, true);
+  assert.equal(e.niv, 3);
+  // le quota monte APRÈS coup : le jour reste acquis (ok figé)
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 2, today: '2026-07-09' });
+  assert.equal(habitOkOn(s, HP.id, '2026-07-08'), true, 'pas de révisionnisme');
+});
+ok('toggle sur habitude à paliers = coche au quota (niv + ok)', () => {
+  let s = seedPaliers();
+  s = reduce(s, { type: 'habit.palierSet', id: HP.id, palier: 1, today: '2026-07-02' });
+  s = reduce(s, { type: 'habit.toggle', id: HP.id, date: '2026-07-08', ts: TS('2026-07-08') });
+  const e = habitEntry(s, HP.id, '2026-07-08');
+  assert.equal(e.niv, 2);
+  assert.equal(e.ok, true);
 });
 ok('rattrapage : cocher avant palierDepuis compte pour la consolidation', () => {
   let s = defaultState();

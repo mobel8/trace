@@ -6,7 +6,7 @@ import { h, uid, toast, burst, confirmDialog, openModal, plur, frDM, cap } from 
 import { icon } from '../icons.js';
 import * as L from '../logic.js';
 import { getState, apply, todayK } from '../app.js';
-import { habitMiniHeat } from '../charts.js';
+import { habitMiniHeat, habitEscalier } from '../charts.js';
 
 export const hueVar = (color) => 'var(--hue-' + color + ')';
 
@@ -188,6 +188,7 @@ function habitCard(hb, s, tk, ws) {
       h('span', 'badge-palier', 'Palier ' + (idx + 1) + '/' + hb.paliers.length),
       h('span', 'palier-noyau', 'Noyau : ' + hb.paliers[idx]),
     ));
+    const dep = L.depassements(s, hb, tk, 14);
     if (!dernier) {
       const pct = Math.min(1, reussites / seuil);
       box.append(h('div', { class: 'row', style: { gap: '10px' } },
@@ -202,8 +203,11 @@ function habitCard(hb, s, tk, ws) {
             },
           }, icon('flame', 14), 'Monter : ' + hb.paliers[idx + 1].slice(0, 30)),
         ));
+        if (dep) box.append(h('div', 'palier-hint', 'Et tu as déjà dépassé le quota ' + dep + '× ces 14 jours ✨ — la marche est prête.'));
       } else {
-        box.append(h('div', 'palier-hint', 'Encore ' + Math.max(0, seuil - reussites) + ' réussite' + (seuil - reussites > 1 ? 's' : '') + ' pour consolider, prochaine étape : ' + hb.paliers[idx + 1]));
+        box.append(h('div', 'palier-hint',
+          'Encore ' + Math.max(0, seuil - reussites) + ' réussite' + (seuil - reussites > 1 ? 's' : '') + ' pour consolider, prochaine étape : ' + hb.paliers[idx + 1]
+          + (dep ? ' · déjà ' + dep + ' dépassement' + (dep > 1 ? 's' : '') + ' ✨' : '')));
       }
     } else {
       box.append(h('div', 'palier-hint complet', icon('spark', 12), 'Habitude complète atteinte — entretiens-la.'));
@@ -241,10 +245,33 @@ function habitCard(hb, s, tk, ws) {
     card.append(list);
   }
 
+  /* ---------- escalier des niveaux (14 j) ---------- */
+  if (Array.isArray(hb.paliers) && hb.paliers.length) {
+    const quota = (hb.palier ?? 0) + 1;
+    const esc = h('div');
+    habitEscalier(esc, {
+      nbPaliers: hb.paliers.length,
+      quota,
+      todayK: tk,
+      getNiv: (k) => {
+        const e = L.habitEntry(s, hb.id, k);
+        if (!e) return null;
+        return { niv: e.niv || quota, ok: e.ok !== false };
+      },
+    });
+    card.append(h('div', 'escalier-box',
+      h('div', 'card-sub', 'Niveaux atteints · 14 j (pointillé = quota)'),
+      esc));
+  }
+
   const heat = h('div', 'heat-wrap');
   habitMiniHeat(heat, {
     habit: hb,
     doneOn: (k) => L.habitDoneOn(getState(), hb.id, k),
+    stateOn: (k) => {
+      const e = L.habitEntry(getState(), hb.id, k);
+      return e ? (e.ok !== false ? 'ok' : 'partiel') : null;
+    },
     todayK: tk,
     weekStart: ws,
     onToggle: (k) => apply({ type: 'habit.toggle', id: hb.id, date: k, ts: Date.now() }),
@@ -252,13 +279,24 @@ function habitCard(hb, s, tk, ws) {
   card.append(heat);
 
   if (scheduledToday) {
+    const entryToday = L.habitEntry(s, hb.id, tk);
+    const okToday = !!entryToday && entryToday.ok !== false;
+    const aPaliers = Array.isArray(hb.paliers) && hb.paliers.length;
     const btn = h('button', {
-      class: 'habit-done-btn' + (doneToday ? ' done' : ''),
+      class: 'habit-done-btn' + (okToday ? ' done' : ''),
       onclick: () => {
-        const was = L.habitDoneOn(getState(), hb.id, tk);
-        if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !was) celebrate(hb, btn);
+        if (aPaliers) {
+          const quota = (hb.palier ?? 0) + 1;
+          const dejaOk = (() => { const e = L.habitEntry(getState(), hb.id, tk); return !!e && e.ok !== false; })();
+          if (apply({ type: 'habit.niveau', id: hb.id, date: tk, niv: dejaOk ? 0 : quota, ts: Date.now() }) && !dejaOk) celebrate(hb, btn);
+        } else {
+          const was = L.habitDoneOn(getState(), hb.id, tk);
+          if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !was) celebrate(hb, btn);
+        }
       },
-    }, icon('check', 14), doneToday ? 'Fait aujourd’hui' : 'Marquer comme fait');
+    }, icon('check', 14),
+      okToday ? 'Fait aujourd’hui'
+        : (entryToday && aPaliers ? 'Compléter le quota du jour' : 'Marquer comme fait'));
     card.append(btn);
   }
 

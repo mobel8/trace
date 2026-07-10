@@ -19,7 +19,7 @@ const levelOf = (v) => (v <= 0 ? 0 : v === 1 ? 1 : v <= 3 ? 2 : v <= 6 ? 3 : 4);
 
 const MONTHS_FR = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 
-export function activityHeatmap(container, { act, weeks = 26, todayK, weekStart = 1 }) {
+export function activityHeatmap(container, { act, weeks = 26, todayK, weekStart = 1, label = 'action', vide = 'Aucune activité enregistrée pour le moment.' }) {
   const CELL = 11, GAP = 3, STEP = CELL + GAP;
   const LEFT = 26, TOP = 18;
   const firstWeek = addDays(weekStartOf(todayK, weekStart), -7 * (weeks - 1));
@@ -55,7 +55,7 @@ export function activityHeatmap(container, { act, weeks = 26, todayK, weekStart 
         class: 'heat-cell',
         tabindex: -1,
       });
-      const tipData = { value: plur(v, 'action'), sub: cap(frDayShort(k)) };
+      const tipData = { value: plur(v, label), sub: cap(frDayShort(k)) };
       rect.addEventListener('pointermove', (e) => showTip(tipData, e.clientX, e.clientY));
       rect.addEventListener('pointerleave', hideTip);
       svg.append(rect);
@@ -72,8 +72,8 @@ export function activityHeatmap(container, { act, weeks = 26, todayK, weekStart 
       'Plus'),
     h('div', 'chart-note',
       total === 0
-        ? 'Aucune activité enregistrée pour le moment.'
-        : total + ' actions · ' + plur(activeDays, 'jour actif', 'jours actifs')
+        ? vide
+        : plur(total, label) + ' · ' + plur(activeDays, 'jour actif', 'jours actifs')
           + (best.k ? ' · record ' + best.v + ' le ' + frDayShort(best.k) : '')),
   );
 }
@@ -81,7 +81,8 @@ export function activityHeatmap(container, { act, weeks = 26, todayK, weekStart 
 /* ============================== Mini-heatmap d'une habitude ============================== */
 // Binaire (fait / pas fait) dans la couleur de l'habitude ; clic = corriger un jour.
 
-export function habitMiniHeat(container, { habit, doneOn, todayK, weekStart = 1, weeks = 13, onToggle }) {
+// stateOn(k) optionnel : 'ok' (quota atteint) | 'partiel' (présence sous quota) | null.
+export function habitMiniHeat(container, { habit, doneOn, stateOn, todayK, weekStart = 1, weeks = 13, onToggle }) {
   const CELL = 11, GAP = 3, STEP = CELL + GAP;
   const firstWeek = addDays(weekStartOf(todayK, weekStart), -7 * (weeks - 1));
   const W = weeks * STEP - GAP;
@@ -93,19 +94,68 @@ export function habitMiniHeat(container, { habit, doneOn, todayK, weekStart = 1,
       const k = addDays(firstWeek, w * 7 + d);
       if (k > todayK) continue;
       const before = k < habit.createdDay;
-      const done = doneOn(k);
+      const etat = stateOn ? stateOn(k) : (doneOn(k) ? 'ok' : null);
       const rect = sv('rect', {
         x: w * STEP, y: d * STEP, width: CELL, height: CELL, rx: 3,
-        fill: done ? 'var(--hc)' : 'var(--surface-3)',
+        fill: etat === 'ok' ? 'var(--hc)'
+          : etat === 'partiel' ? 'color-mix(in oklab, var(--hc) 42%, var(--surface))'
+          : 'var(--surface-3)',
         opacity: before ? 0.28 : 1,
         class: 'heat-cell clickable',
       });
-      const tipData = { value: done ? 'Fait' : 'Pas fait', sub: cap(frDayShort(k)) + ' · cliquer pour corriger' };
+      const tipData = {
+        value: etat === 'ok' ? 'Quota atteint' : etat === 'partiel' ? 'Partiel (sous le quota)' : 'Pas fait',
+        sub: cap(frDayShort(k)) + ' · cliquer pour corriger',
+      };
       rect.addEventListener('pointermove', (e) => showTip(tipData, e.clientX, e.clientY));
       rect.addEventListener('pointerleave', hideTip);
       rect.addEventListener('click', () => { hideTip(); onToggle(k); });
       svg.append(rect);
     }
+  }
+  clear(container).append(svg);
+}
+
+/* ============================== Escalier d'une habitude à paliers ============================== */
+// Les 14 derniers jours : hauteur = niveau atteint / nb de paliers ; ligne de
+// quota (palier courant) en référence. ok = couleur pleine, partiel = atténué.
+
+export function habitEscalier(container, { getNiv, nbPaliers, quota, todayK, jours = 14 }) {
+  const W = 176, H = 56, PAD_B = 4, PAD_T = 8;
+  const step = W / jours;
+  const barW = Math.min(9, step - 3);
+  const plotH = H - PAD_B - PAD_T;
+  const yFor = (niv) => PAD_T + plotH * (1 - niv / nbPaliers);
+  const svg = sv('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'Niveaux atteints sur ' + jours + ' jours' });
+
+  // ligne de quota (référence, trait plein discret)
+  const yQuota = yFor(quota);
+  svg.append(sv('line', { x1: 0, y1: yQuota, x2: W, y2: yQuota, stroke: 'color-mix(in oklab, var(--hc) 55%, transparent)', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
+  // base
+  svg.append(sv('line', { x1: 0, y1: H - PAD_B, x2: W, y2: H - PAD_B, stroke: 'var(--border-strong)', 'stroke-width': 1 }));
+
+  for (let i = 0; i < jours; i++) {
+    const k = addDays(todayK, -(jours - 1 - i));
+    const info = getNiv(k); // { niv, ok } | null
+    const cx = step * i + step / 2;
+    if (info && info.niv > 0) {
+      const yTop = yFor(info.niv);
+      svg.append(sv('rect', {
+        x: cx - barW / 2, y: yTop, width: barW, height: H - PAD_B - yTop, rx: 2,
+        fill: info.ok ? 'var(--hc)' : 'color-mix(in oklab, var(--hc) 42%, var(--surface))',
+        class: 'heat-cell',
+      }));
+    } else {
+      svg.append(sv('circle', { cx, cy: H - PAD_B - 2.5, r: 1.5, fill: 'var(--surface-3)' }));
+    }
+    const tipData = {
+      value: info && info.niv ? 'Niveau ' + info.niv + '/' + nbPaliers + (info.ok ? (info.niv > quota ? ' · au-delà du quota ✨' : ' · quota atteint') : ' · sous le quota') : 'Rien ce jour-là',
+      sub: cap(frDayShort(k)),
+    };
+    const hit = sv('rect', { x: step * i, y: 0, width: step, height: H, fill: 'transparent' });
+    hit.addEventListener('pointermove', (e) => showTip(tipData, e.clientX, e.clientY));
+    hit.addEventListener('pointerleave', hideTip);
+    svg.append(hit);
   }
   clear(container).append(svg);
 }

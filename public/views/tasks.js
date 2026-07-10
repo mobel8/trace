@@ -1,7 +1,7 @@
 // views/tasks.js — vue Tâches : sections (retard / aujourd'hui / à venir / un jour),
 // sous-tâches en arborescence (pliables), notes affichées, ajout rapide, filtre
 // par projet, terminées repliées. Exporte taskNode/taskRow (réutilisés par Aujourd'hui).
-import { h, uid, toast, confirmDialog, frDM, cap, plur, emptyState } from '../ui.js';
+import { h, uid, toast, confirmDialog, frDM, cap, plur, emptyState, relDay } from '../ui.js';
 import { icon } from '../icons.js';
 import * as L from '../logic.js';
 import { getState, apply, todayK, scheduleRender } from '../app.js';
@@ -183,13 +183,24 @@ export function renderTasks(root) {
   }
   root.append(list);
 
-  /* terminées */
+  /* terminées : groupées par jour — le dézoom « ai-je été productif ? » */
   if (sec.done.length) {
     const toggle = h('button', { class: 'done-toggle' + (doneOpen ? ' open' : '') },
       icon('chevronR', 14), 'Terminées', h('span', 'n', '· ' + sec.done.length));
     const doneList = h('div', { class: doneOpen ? '' : 'hidden' });
-    for (const t of sec.done.slice(0, 30)) doneList.append(taskNode(t));
-    if (sec.done.length > 30) doneList.append(h('div', { class: 'chart-note', style: { paddingLeft: '10px' } }, 'Le reste est dans l’Historique.'));
+    const parJour = new Map();
+    for (const t of sec.done.slice(0, 60)) {
+      const k = L.dayOfTs(t.completedAt);
+      if (!parJour.has(k)) parJour.set(k, []);
+      parJour.get(k).push(t);
+    }
+    for (const [k, liste] of parJour) {
+      doneList.append(h('div', 'done-day',
+        h('span', null, relDay(k, tk)),
+        h('span', 'done-day-n', plur(liste.length, 'tâche'))));
+      for (const t of liste) doneList.append(taskNode(t));
+    }
+    if (sec.done.length > 60) doneList.append(h('div', { class: 'chart-note', style: { paddingLeft: '10px' } }, 'Le reste est dans l’Historique.'));
     toggle.addEventListener('click', () => {
       doneOpen = !doneOpen;
       toggle.classList.toggle('open', doneOpen);

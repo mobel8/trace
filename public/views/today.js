@@ -150,26 +150,55 @@ function statTile(ico, lbl, val, unit, cls) {
 }
 
 function habitRow(hb, s, tk, ws) {
-  const done = L.habitDoneOn(s, hb.id, tk);
   const entry = L.habitEntry(s, hb.id, tk);
+  const okToday = !!entry && entry.ok !== false;
+  const partiel = !!entry && !okToday;
   const streak = L.currentStreak(s, hb, tk, ws);
-  const aRattraper = !done && L.rateDernierJourPrevu(s, hb, tk);
-  const noyau = Array.isArray(hb.paliers) && hb.paliers.length ? hb.paliers[hb.palier ?? 0] : null;
+  const aRattraper = !entry && L.rateDernierJourPrevu(s, hb, tk);
+  const aPaliers = Array.isArray(hb.paliers) && hb.paliers.length > 0;
+  const quota = aPaliers ? (hb.palier ?? 0) + 1 : 1;
+  const nivAtteint = entry ? (entry.niv || (okToday ? quota : 0)) : 0;
+  const noyau = aPaliers ? hb.paliers[hb.palier ?? 0] : null;
 
   const check = h('span', { class: 'habit-check', style: { position: 'relative' } }, icon('check', 14));
 
-  /* colonne centrale : nom, noyau du palier courant, note du jour */
+  /* échelle des niveaux du jour : cliquer un cran = « voilà où je suis allé » */
+  let ladder = null;
+  if (aPaliers) {
+    ladder = h('span', { class: 'habit-ladder', 'aria-label': 'Niveau atteint aujourd’hui' });
+    for (let i = 1; i <= hb.paliers.length; i++) {
+      ladder.append(h('button', {
+        class: 'ladder-dot' + (i <= nivAtteint ? (i > quota ? ' au-dela' : ' fait') : '') + (i === quota ? ' quota' : ''),
+        title: 'Niveau ' + i + (i === quota ? ' (quota du jour)' : '') + ' : ' + hb.paliers[i - 1],
+        'aria-label': 'Niveau ' + i + ' : ' + hb.paliers[i - 1],
+        onclick: (e) => {
+          e.stopPropagation();
+          const etaitOk = okToday;
+          const cible = i === nivAtteint ? 0 : i;
+          if (apply({ type: 'habit.niveau', id: hb.id, date: tk, niv: cible, ts: Date.now() })) {
+            if (cible >= quota && !etaitOk) celebrate(hb, check);
+            else if (cible > quota) toast('Au-delà du quota : niveau ' + cible + '/' + hb.paliers.length + ' ✨', { ico: 'spark' });
+          }
+        },
+      }));
+    }
+  }
+
+  /* colonne centrale : nom, noyau (quota), échelle, note du jour */
   const main = h('span', 'habit-main',
     h('span', 'habit-name-line',
       h('span', 'habit-name', hb.name),
       streak.n > 0 ? h('span', { class: 'habit-streak' + (streak.n >= 2 ? ' hot' : '') }, icon('flame', 13), streak.n + ' ' + streak.unit) : null,
+      partiel ? h('span', { class: 'nudge partiel', title: 'Présence enregistrée, quota pas encore atteint' }, 'partiel ' + nivAtteint + '/' + hb.paliers.length) : null,
       aRattraper ? h('span', { class: 'nudge', title: 'Raté au dernier jour prévu — ne rate jamais deux fois' }, 'à rattraper') : null,
     ),
-    noyau ? h('span', 'habit-core', 'Noyau · ' + noyau) : null,
+    noyau ? h('span', 'habit-core', 'Quota · ' + noyau + (nivAtteint > quota ? '  →  atteint : ' + hb.paliers[nivAtteint - 1] + ' ✨' : '')) : null,
+    ladder,
     entry && entry.note ? h('span', 'habit-note-line', icon('note', 11), entry.note) : null,
   );
 
   /* actions du jour : note + bonus, une fois la coche posée */
+  const done = !!entry;
   const extras = h('span', 'habit-extras');
   if (done) {
     extras.append(h('button', {
@@ -195,21 +224,26 @@ function habitRow(hb, s, tk, ws) {
   }
 
   const row = h('div', {
-    class: 'habit-row' + (done ? ' done' : ''),
+    class: 'habit-row' + (okToday ? ' done' : '') + (partiel ? ' partiel' : ''),
     style: { '--hc': hueVar(hb.color) },
     role: 'button', tabindex: 0,
-    'aria-pressed': String(done),
-    'aria-label': hb.name + (done ? ' : fait' : ' : à faire'),
+    'aria-pressed': String(okToday),
+    'aria-label': hb.name + (okToday ? ' : quota atteint' : partiel ? ' : partiel' : ' : à faire'),
   },
     emojiEl(hb),
     main,
     extras,
     check,
   );
+  // Clic sur la ligne = raccourci « quota du jour » : partiel → complété, fait → décoché.
   const toggle = () => {
-    const wasDone = L.habitDoneOn(getState(), hb.id, tk);
-    if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !wasDone) {
-      celebrate(hb, check);
+    const e = L.habitEntry(getState(), hb.id, tk);
+    const etaitOk = !!e && e.ok !== false;
+    if (aPaliers) {
+      const cible = etaitOk ? 0 : quota;
+      if (apply({ type: 'habit.niveau', id: hb.id, date: tk, niv: cible, ts: Date.now() }) && !etaitOk) celebrate(hb, check);
+    } else {
+      if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !etaitOk) celebrate(hb, check);
     }
   };
   row.addEventListener('click', toggle);

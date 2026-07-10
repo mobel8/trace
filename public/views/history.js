@@ -94,11 +94,16 @@ function eventRow(ev) {
         + (ev.project ? ev.project + ' · ' : '') + 'tâche terminée'));
   } else if (ev.kind === 'habit') {
     ico = 'repeat'; ec = hueVar(ev.habit.color);
+    const nb = Array.isArray(ev.habit.paliers) ? ev.habit.paliers.length : 0;
+    const niveau = ev.niv && nb ? 'niveau ' + ev.niv + '/' + nb : null;
+    const statut = ev.ok
+      ? (niveau ? niveau : 'habitude cochée')
+      : (niveau ? niveau + ' · sous le quota' : 'présence (sous le quota)');
     body = h('div', 'event-body',
       h('div', 'txt', (ev.habit.emoji ? ev.habit.emoji + ' ' : '') + ev.title),
       h('div', 'meta',
         (ev.note ? '« ' + ev.note + ' » · ' : '')
-        + 'habitude cochée' + (ev.bonus ? ' + bonus ✨' : '')));
+        + statut + (ev.bonus ? ' + bonus ✨' : '')));
   } else if (ev.kind === 'note') {
     ico = 'note'; ec = 'var(--text-3)';
     body = h('div', 'event-body', h('div', 'txt', highlightTags(ev.title)));

@@ -1,7 +1,7 @@
 // logic.js — Trace : logique métier pure, partagée serveur (Node) et client (navigateur).
 // Aucune dépendance, aucun accès horloge/fichier : tout reçoit ses entrées en paramètres.
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 export const DAY_MS = 86400000;
 
 /* ============================== Dates (heure LOCALE) ============================== */
@@ -225,11 +225,49 @@ export function reduce(state, op) {
       }
       const day = { ...(s.habitLogs[op.date] || {}) };
       if (day[h.id]) delete day[h.id];
-      else day[h.id] = { t: op.ts }; // format objet : accueille note et bonus
+      else {
+        // Habitude à paliers : la coche simple vaut « quota du jour atteint ».
+        const entry = { t: op.ts };
+        if (Array.isArray(h.paliers) && h.paliers.length) {
+          entry.niv = (h.palier ?? 0) + 1;
+          entry.ok = true;
+        }
+        day[h.id] = entry;
+      }
       const logs = { ...s.habitLogs };
       if (Object.keys(day).length) logs[op.date] = day;
       else delete logs[op.date];
       s.habitLogs = logs;
+      return s;
+    }
+    case 'habit.niveau': {
+      // Niveau réellement atteint ce jour-là (peut être sous ou au-delà du quota).
+      const h = findHabit(op.id);
+      req(Array.isArray(h.paliers) && h.paliers.length, 'habitude sans paliers');
+      req(isValidKey(op.date), 'date invalide');
+      req(Number.isInteger(op.niv) && op.niv >= 0 && op.niv <= h.paliers.length, 'niveau hors bornes');
+      req(isNum(op.ts), 'ts manquant');
+      if (op.niv > 0 && (op.date < h.createdDay || (h.palierDepuis && op.date < h.palierDepuis))) {
+        s.habits = s.habits.map((x) => (x.id === h.id ? {
+          ...x,
+          createdDay: op.date < x.createdDay ? op.date : x.createdDay,
+          ...(x.palierDepuis && op.date < x.palierDepuis ? { palierDepuis: op.date } : {}),
+        } : x));
+      }
+      const jour = { ...(s.habitLogs[op.date] || {}) };
+      if (op.niv === 0) {
+        delete jour[h.id];
+      } else {
+        const prev = habitEntry(s, h.id, op.date) || {};
+        const entry = { t: prev.t || op.ts, niv: op.niv, ok: op.niv >= (h.palier ?? 0) + 1 };
+        if (prev.note) entry.note = prev.note;
+        if (prev.bonus) entry.bonus = true;
+        jour[h.id] = entry;
+      }
+      const logs2 = { ...s.habitLogs };
+      if (Object.keys(jour).length) logs2[op.date] = jour;
+      else delete logs2[op.date];
+      s.habitLogs = logs2;
       return s;
     }
 
@@ -432,8 +470,35 @@ export function habitEntry(state, habitId, k) {
   return typeof v === 'object' ? v : { t: v };
 }
 
+// Présence : quelque chose a été fait ce jour-là (même en dessous du quota).
 export function habitDoneOn(state, habitId, k) {
   return !!habitEntry(state, habitId, k);
+}
+
+// Quota atteint : la coche « compte » pour la série et les taux.
+// entry.ok est figé AU MOMENT de la coche (pas de révision quand le palier bouge) ;
+// absent (anciennes données ou habitude sans paliers) = quota atteint.
+export function habitOkOn(state, habitId, k) {
+  const e = habitEntry(state, habitId, k);
+  return !!e && e.ok !== false;
+}
+
+// Niveau atteint ce jour-là (1-based), pour les habitudes à paliers.
+export function habitNivOn(state, habitId, k) {
+  const e = habitEntry(state, habitId, k);
+  return e ? (e.niv || null) : null;
+}
+
+// Dépassements récents : jours où le niveau atteint excède le quota courant.
+export function depassements(state, habit, todayK, jours = 14) {
+  if (!Array.isArray(habit.paliers)) return 0;
+  const quota = (habit.palier ?? 0) + 1;
+  let n = 0;
+  for (let k = addDays(todayK, -(jours - 1)); k <= todayK; k = addDays(k, 1)) {
+    const niv = habitNivOn(state, habit.id, k);
+    if (niv && niv > quota) n++;
+  }
+  return n;
 }
 
 // Nombre de coches depuis le début du palier courant (consolidation).
@@ -442,7 +507,7 @@ export function reussitesAuPalier(state, habit, todayK) {
   const from = habit.palierDepuis || habit.createdDay;
   let n = 0;
   for (let k = from; k <= todayK; k = addDays(k, 1)) {
-    if (habitDoneOn(state, habit.id, k)) n++;
+    if (habitOkOn(state, habit.id, k)) n++;
   }
   return n;
 }
@@ -464,7 +529,7 @@ export function rateDernierJourPrevu(state, habit, todayK) {
     const k = addDays(todayK, -i);
     if (k < habit.createdDay) return false;
     if (!isScheduledDay(habit, k)) continue;
-    return !habitDoneOn(state, habit.id, k);
+    return !habitOkOn(state, habit.id, k);
   }
   return false;
 }
@@ -488,7 +553,7 @@ export function isScheduledDay(habit, k) {
 
 function weekCount(state, habitId, weekStartKey) {
   let c = 0;
-  for (let i = 0; i < 7; i++) if (habitDoneOn(state, habitId, addDays(weekStartKey, i))) c++;
+  for (let i = 0; i < 7; i++) if (habitOkOn(state, habitId, addDays(weekStartKey, i))) c++;
   return c;
 }
 
@@ -510,11 +575,11 @@ export function currentStreak(state, habit, todayK, weekStart = 1) {
   }
   let n = 0;
   let k = todayK;
-  if (isScheduledDay(habit, k) && !habitDoneOn(state, habit.id, k)) k = addDays(k, -1);
+  if (isScheduledDay(habit, k) && !habitOkOn(state, habit.id, k)) k = addDays(k, -1);
   for (let i = 0; i < 3700; i++) {
     if (k < habit.createdDay) break;
     if (!isScheduledDay(habit, k)) { k = addDays(k, -1); continue; }
-    if (habitDoneOn(state, habit.id, k)) { n++; k = addDays(k, -1); }
+    if (habitOkOn(state, habit.id, k)) { n++; k = addDays(k, -1); }
     else break;
   }
   return { n, unit: 'j' };
@@ -534,7 +599,7 @@ export function bestStreak(state, habit, todayK, weekStart = 1) {
   let best = 0, run = 0;
   for (let k = habit.createdDay; k <= todayK; k = addDays(k, 1)) {
     if (!isScheduledDay(habit, k)) continue;
-    if (habitDoneOn(state, habit.id, k)) { run++; if (run > best) best = run; }
+    if (habitOkOn(state, habit.id, k)) { run++; if (run > best) best = run; }
     else if (k !== todayK) run = 0; // aujourd'hui pas encore fait : pas un échec
   }
   return { n: best, unit: habit.schedule.kind === 'weekly' ? 'sem.' : 'j' };
@@ -559,7 +624,7 @@ export function completionRate(state, habit, todayK, weekStart = 1) {
   for (let k = from < habit.createdDay ? habit.createdDay : from; k <= todayK; k = addDays(k, 1)) {
     if (!isScheduledDay(habit, k)) continue;
     expected++;
-    if (habitDoneOn(state, habit.id, k)) done++;
+    if (habitOkOn(state, habit.id, k)) done++;
   }
   return expected ? done / expected : null;
 }
@@ -571,7 +636,7 @@ export function habitDueToday(state, habit, todayK, weekStart = 1) {
   const sc = habit.schedule;
   if (sc.kind === 'daily') return true;
   if (sc.kind === 'days') return sc.days.includes(weekday(todayK));
-  return weekCount(state, habit.id, weekStartOf(todayK, weekStart)) < sc.target || habitDoneOn(state, habit.id, todayK);
+  return weekCount(state, habit.id, weekStartOf(todayK, weekStart)) < sc.target || habitOkOn(state, habit.id, todayK);
 }
 
 /* ============================== Tâches ============================== */
@@ -732,7 +797,7 @@ export function timeline(state, { types, query, todayK, days = 14, beforeK = nul
         const h = habitById[hid];
         if (!h) continue;
         const e = typeof v === 'object' ? v : { t: v };
-        events.push({ kind: 'habit', ts: e.t, dateKey: k, title: h.name, habit: h, note: e.note || null, bonus: !!e.bonus });
+        events.push({ kind: 'habit', ts: e.t, dateKey: k, title: h.name, habit: h, note: e.note || null, bonus: !!e.bonus, niv: e.niv || null, ok: e.ok !== false });
       }
     }
   }
