@@ -1,0 +1,229 @@
+// views/today.js — tableau de bord du jour : habitudes, tâches, focus, note rapide.
+import { h, uid, toast, burst, fmtTime, plur, frDayFull, cap, emptyState } from '../ui.js';
+import { icon } from '../icons.js';
+import * as L from '../logic.js';
+import { getState, apply, todayK, go } from '../app.js';
+import { taskRow } from './tasks.js';
+import { hueVar, schedLabel } from './habits.js';
+
+function greeting(name, hour) {
+  const hello = hour < 5 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir';
+  return name ? hello + ', ' + name : hello;
+}
+
+export function renderToday(root) {
+  const s = getState();
+  const tk = todayK();
+  const now = Date.now();
+  const ws = s.settings.weekStart;
+
+  const dueHabits = s.habits
+    .filter((hb) => !hb.archivedAt && L.habitDueToday(s, hb, tk, ws))
+    .sort((a, b) => a.order - b.order);
+  const doneCount = dueHabits.filter((hb) => L.habitDoneOn(s, hb.id, tk)).length;
+  const sec = L.taskSections(s.tasks, tk);
+
+  /* ---------- entête ---------- */
+  const bits = [];
+  if (dueHabits.length) bits.push(doneCount + '/' + dueHabits.length + ' habitude' + (dueHabits.length > 1 ? 's' : ''));
+  const nT = sec.overdue.length + sec.today.length;
+  if (nT) bits.push(plur(nT, 'tâche'));
+  root.append(h('div', 'view-head',
+    h('h1', null, greeting(s.settings.name, new Date().getHours())),
+    h('div', 'sub', cap(frDayFull(tk)) + (bits.length ? ' · ' + bits.join(' · ') : '')),
+  ));
+
+  /* ---------- tuiles ---------- */
+  const weekFrom = L.weekStartOf(tk, ws);
+  const act = L.activityByDay(s, weekFrom, tk);
+  let weekTasks = 0, weekNotes = 0;
+  for (const day of Object.values(act)) { weekTasks += day.tasks; weekNotes += day.notes; }
+  const mom = L.momentum(s, tk);
+  const focusMs = L.focusToday(s, tk, now);
+  root.append(h('div', 'stat-row',
+    statTile('flame', 'Élan', mom, mom > 0 ? 'j' : '', 'flame'),
+    statTile('tasks', 'Tâches · semaine', weekTasks, ''),
+    statTile('clock', 'Focus · aujourd’hui', focusMs > 0 ? L.fmtDurationShort(focusMs) : '0', ''),
+    statTile('note', 'Notes · semaine', weekNotes, ''),
+  ));
+
+  /* ---------- grille ---------- */
+  const left = h('div', 'stack');
+  const right = h('div', 'stack');
+  root.append(h('div', 'grid-2', left, right));
+
+  /* Habitudes du jour */
+  const habitsCard = h('div', 'card');
+  habitsCard.append(h('div', 'card-title',
+    icon('repeat', 15), 'Habitudes du jour',
+    h('span', 'spacer'),
+    dueHabits.length ? h('span', 'card-sub tnum', doneCount + ' / ' + dueHabits.length) : null,
+  ));
+  if (!dueHabits.length) {
+    habitsCard.append(emptyState('repeat', 'Aucune habitude pour aujourd’hui', 'Crée ta première habitude pour lancer une série.'),
+      h('div', { style: { textAlign: 'center' } },
+        h('button', { class: 'btn btn-ghost btn-sm', onclick: () => go('habitudes') }, icon('plus', 14), 'Créer une habitude')));
+  } else {
+    if (doneCount === dueHabits.length) {
+      habitsCard.append(h('div', { class: 'all-done', style: { marginBottom: '8px' } }, icon('spark', 15), 'Tout est fait pour aujourd’hui !'));
+    }
+    for (const hb of dueHabits) habitsCard.append(habitRow(hb, s, tk, ws));
+  }
+  left.append(habitsCard);
+
+  /* Tâches */
+  const tasksCard = h('div', 'card');
+  tasksCard.append(h('div', 'card-title',
+    icon('tasks', 15), 'Tâches',
+    h('span', 'spacer'),
+    h('button', { class: 'btn btn-subtle btn-sm', onclick: () => go('taches') }, 'Tout voir')));
+  if (sec.overdue.length) {
+    tasksCard.append(h('div', { class: 'task-section-title late' }, 'En retard', h('span', 'n', String(sec.overdue.length))));
+    for (const t of sec.overdue) tasksCard.append(taskRow(t));
+  }
+  if (sec.today.length) {
+    tasksCard.append(h('div', 'task-section-title', 'Aujourd’hui'));
+    for (const t of sec.today) tasksCard.append(taskRow(t));
+  }
+  if (!sec.overdue.length && !sec.today.length) {
+    const next = [...sec.upcoming, ...sec.someday].slice(0, 3);
+    if (next.length) {
+      tasksCard.append(h('div', 'task-section-title', 'À suivre'));
+      for (const t of next) tasksCard.append(taskRow(t));
+    } else {
+      tasksCard.append(emptyState('spark', 'Rien à faire pour aujourd’hui', 'Profite, ou note ce qui te trotte dans la tête.'));
+    }
+  }
+  const quickInput = h('input', {
+    class: 'input', id: 'today-task-input', 'data-keep': '', maxlength: 200,
+    placeholder: 'Ajouter une tâche pour aujourd’hui…',
+  });
+  quickInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const title = quickInput.value.trim();
+      if (!title) return;
+      quickInput.value = '';
+      apply({ type: 'task.create', task: { id: uid('task'), title, createdAt: Date.now(), due: tk } });
+    }
+  });
+  tasksCard.append(h('div', { class: 'quick-add', style: { marginTop: '12px' } }, quickInput));
+  left.append(tasksCard);
+
+  /* Focus */
+  right.append(focusCard(s, tk));
+
+  /* Note rapide */
+  const noteCard = h('div', 'card');
+  noteCard.append(h('div', 'card-title', icon('note', 15), 'Note rapide',
+    h('span', 'spacer'),
+    h('button', { class: 'btn btn-subtle btn-sm', onclick: () => go('journal') }, 'Journal')));
+  const noteInput = h('input', {
+    class: 'input', id: 'today-note', 'data-keep': '', maxlength: 2000,
+    placeholder: 'Qu’es-tu en train de faire ? (#tag)',
+  });
+  noteInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const text = noteInput.value.trim();
+      if (!text) return;
+      noteInput.value = '';
+      if (apply({ type: 'journal.add', entry: { id: uid('note'), ts: Date.now(), text } })) toast('Note ajoutée', { ico: 'note' });
+    }
+  });
+  noteCard.append(noteInput);
+  const todayNotes = s.journal.filter((e) => L.dayOfTs(e.ts) === tk).sort((a, b) => b.ts - a.ts).slice(0, 3);
+  if (todayNotes.length) {
+    const list = h('div', { style: { marginTop: '10px', display: 'grid', gap: '2px' } });
+    for (const e of todayNotes) {
+      list.append(h('div', { class: 'event-row', style: { alignItems: 'center' } },
+        h('span', { class: 'muted tnum', style: { fontSize: '12px', flex: 'none' } }, fmtTime(e.ts)),
+        h('span', { style: { fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, e.text)));
+    }
+    noteCard.append(list);
+  }
+  right.append(noteCard);
+}
+
+function statTile(ico, lbl, val, unit, cls) {
+  return h('div', { class: 'stat-tile' + (cls ? ' ' + cls : '') },
+    h('div', 'lbl', icon(ico, 13), lbl),
+    h('div', 'val', String(val), unit ? h('small', null, unit) : null));
+}
+
+function habitRow(hb, s, tk, ws) {
+  const done = L.habitDoneOn(s, hb.id, tk);
+  const streak = L.currentStreak(s, hb, tk, ws);
+  const check = h('span', { class: 'habit-check', style: { position: 'relative' } }, icon('check', 14));
+  const row = h('div', {
+    class: 'habit-row' + (done ? ' done' : ''),
+    style: { '--hc': hueVar(hb.color) },
+    role: 'button', tabindex: 0,
+    'aria-pressed': String(done),
+    'aria-label': hb.name + (done ? ' : fait' : ' : à faire'),
+  },
+    h('span', 'habit-emoji', hb.emoji),
+    h('span', 'habit-name', hb.name),
+    streak.n > 0 ? h('span', { class: 'habit-streak' + (streak.n >= 2 ? ' hot' : '') }, icon('flame', 13), streak.n + ' ' + streak.unit) : null,
+    check,
+  );
+  const toggle = () => {
+    const wasDone = L.habitDoneOn(getState(), hb.id, tk);
+    if (apply({ type: 'habit.toggle', id: hb.id, date: tk, ts: Date.now() }) && !wasDone) {
+      burst(check, hueVar(hb.color));
+    }
+  };
+  row.addEventListener('click', toggle);
+  row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  return row;
+}
+
+function focusCard(s, tk) {
+  const card = h('div', 'card');
+  card.append(h('div', 'card-title', icon('target', 15), 'Focus'));
+  const a = s.activeSession;
+  if (a) {
+    const ms = Date.now() - a.start;
+    const mm = Math.floor(ms / 60000), ss = Math.floor((ms % 60000) / 1000);
+    card.append(h('div', 'focus-live',
+      h('span', 'pulse'),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { class: 'focus-time', id: 'focus-time' }, String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0')),
+        h('div', 'focus-label', a.label)),
+    ));
+    card.append(h('div', { class: 'row', style: { marginTop: '14px' } },
+      h('button', {
+        class: 'btn btn-primary', onclick: () => {
+          const dur = Date.now() - getState().activeSession.start;
+          if (dur < 20000) {
+            apply({ type: 'session.discard' });
+            toast('Session trop courte, ignorée', { ico: 'clock' });
+          } else if (apply({ type: 'session.stop', id: uid('sess'), ts: Date.now() })) {
+            toast('Session enregistrée · ' + L.fmtDuration(dur), { ico: 'clock' });
+          }
+        },
+      }, icon('stop', 15), 'Terminer'),
+      h('button', {
+        class: 'btn btn-subtle', onclick: () => {
+          apply({ type: 'session.discard' });
+        },
+      }, 'Abandonner'),
+    ));
+  } else {
+    const labels = [...new Set(s.sessions.slice(-30).map((x) => x.label))].reverse().slice(0, 6);
+    const labelInput = h('input', {
+      class: 'input', id: 'focus-label', 'data-keep': '', maxlength: 120,
+      placeholder: 'Sur quoi vas-tu te concentrer ?', list: 'focus-recents',
+    });
+    const start = () => {
+      const label = labelInput.value.trim() || 'Session focus';
+      apply({ type: 'session.start', label, ts: Date.now() });
+    };
+    labelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') start(); });
+    card.append(
+      h('div', 'quick-add', labelInput, h('button', { class: 'btn btn-primary', onclick: start }, icon('play', 15), 'Démarrer')),
+      h('datalist', { id: 'focus-recents' }, labels.map((l) => h('option', { value: l }))),
+    );
+    const totalMs = L.focusToday(s, tk, Date.now());
+    if (totalMs > 0) card.append(h('div', 'chart-note', L.fmtDuration(totalMs) + ' de focus aujourd’hui'));
+  }
+  return card;
+}

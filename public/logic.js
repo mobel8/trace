@@ -169,7 +169,11 @@ export function reduce(state, op) {
       const h = findHabit(op.id);
       req(isValidKey(op.date), 'date invalide');
       req(isNum(op.ts), 'ts manquant');
-      req(op.date >= h.createdDay || habitDoneOn(s, h.id, op.date), 'date avant la création');
+      // Cocher avant la date de création = rattraper le passé : l'historique
+      // de l'habitude s'étend (les séries et taux repartent de cette date).
+      if (op.date < h.createdDay) {
+        s.habits = s.habits.map((x) => (x.id === h.id ? { ...x, createdDay: op.date } : x));
+      }
       const day = { ...(s.habitLogs[op.date] || {}) };
       if (day[h.id]) delete day[h.id];
       else day[h.id] = op.ts;

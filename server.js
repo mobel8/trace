@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     /* ---------- API ---------- */
-    if (p === '/api/ping') return sendJSON(res, 200, { app: 'trace', version: APP_VERSION });
+    if (p === '/api/ping') return sendJSON(res, 200, { app: 'trace', version: APP_VERSION, dataDir: DATA_DIR, port: PORT });
 
     if (p === '/api/state' && req.method === 'GET') return sendJSON(res, 200, { state });
 
@@ -207,7 +207,8 @@ const server = http.createServer(async (req, res) => {
     const longCache = ext === '.woff2' || ext === '.png' || ext === '.ico';
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': longCache ? 'public, max-age=604800' : 'no-cache',
+      // no-store pour html/js/css : serveur local, fraîcheur garantie après mise à jour
+      'Cache-Control': longCache ? 'public, max-age=604800' : 'no-store',
     });
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);

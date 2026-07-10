@@ -92,9 +92,12 @@ ok('habit.toggle pose puis retire', () => {
   assert.ok(!habitDoneOn(s, H1.id, '2026-07-10'));
   assert.ok(!s.habitLogs['2026-07-10'], 'jour vide purgé');
 });
-ok('habit.toggle refuse avant createdDay et dates invalides', () => {
-  const s = seed();
-  throws(() => reduce(s, { type: 'habit.toggle', id: H1.id, date: '2026-05-31', ts: 1 }), 'avant création');
+ok('habit.toggle avant createdDay étend l\'historique (rattrapage)', () => {
+  let s = seed();
+  s = reduce(s, { type: 'habit.toggle', id: H1.id, date: '2026-05-28', ts: TS('2026-05-28') });
+  const h = s.habits.find((x) => x.id === H1.id);
+  assert.equal(h.createdDay, '2026-05-28');
+  assert.ok(habitDoneOn(s, H1.id, '2026-05-28'));
   throws(() => reduce(s, { type: 'habit.toggle', id: H1.id, date: '2026-02-31', ts: 1 }), 'date invalide');
   throws(() => reduce(s, { type: 'habit.toggle', id: 'nope', date: '2026-07-10', ts: 1 }), 'habitude inconnue');
 });
